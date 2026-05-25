@@ -1,0 +1,185 @@
+{% extends "base.html" %}
+{% block title %}Profile &middot; Gootier{% endblock %}
+
+{% block page_header %}
+<div class="page-header-row">
+  <div>
+    <div class="eyebrow">Account</div>
+    <h1>Your profile</h1>
+    <p class="lede">Manage how Gootier displays you and how you sign in.</p>
+  </div>
+</div>
+{% endblock %}
+
+{% block content %}
+<div class="row g-4">
+  <div class="col-lg-4">
+    <div class="card-x">
+      <div class="card-x-body text-center">
+        <div class="user-avatar mx-auto mb-3" style="width:72px; height:72px; font-size:1.6rem;">
+          {{ (user.nickname[:1] if user.nickname else user.username[:1])|upper }}
+        </div>
+        <h5 class="mb-0">{{ user.nickname or user.username }}</h5>
+        <div class="small-meta">@{{ user.username }}</div>
+        <div class="mt-3">
+          <span class="hl hl-indigo">{{ user.tier|capitalize }} plan</span>
+          {% if user.is_staff() %}<span class="hl hl-purple ms-1">Staff</span>{% endif %}
+        </div>
+      </div>
+      <div class="card-x-footer">
+        <div class="d-flex justify-content-between small">
+          <span class="text-muted">Member since</span>
+          <span>{{ user.created_at.strftime('%b %Y') }}</span>
+        </div>
+        <div class="d-flex justify-content-between small mt-1">
+          <span class="text-muted">Verified</span>
+          <span>{% if user.is_verified %}<i class="fas fa-check text-success me-1"></i>Yes{% else %}<span class="text-warning">Pending</span>{% endif %}</span>
+        </div>
+        <div class="d-flex justify-content-between small mt-1">
+          <span class="text-muted">Connected accounts</span>
+          <span>{{ connections_count }}</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="card-x mt-3">
+      <div class="card-x-header">
+        <h6><i class="fas fa-credit-card me-2 text-muted"></i>Plan</h6>
+      </div>
+      <div class="card-x-body">
+        <p class="text-muted small mb-3">
+          You're currently on the <strong>{{ user.tier|capitalize }}</strong> plan.
+          {% if user.subscribed_until %}Renews {{ user.subscribed_until.strftime('%b %d, %Y') }}.{% endif %}
+        </p>
+        <a href="/billing" class="btn btn-soft w-100">Manage billing &rarr;</a>
+      </div>
+    </div>
+  </div>
+
+  <div class="col-lg-8">
+    <div class="card-x">
+      <div class="card-x-header">
+        <h6><i class="fas fa-id-card me-2 text-muted"></i>Personal info</h6>
+      </div>
+      <div class="card-x-body">
+        <form id="profile-form">
+          <div class="mb-3">
+            <label class="form-label">Username</label>
+            <input class="form-control" value="{{ user.username }}" disabled>
+            <div class="form-text">Your @handle is permanent.</div>
+          </div>
+          <div class="mb-3">
+            <label class="form-label">Display name</label>
+            <input class="form-control" name="nickname" value="{{ user.nickname or '' }}"
+                   maxlength="50" placeholder="How should we address you?">
+          </div>
+          <div class="mb-4">
+            <label class="form-label">Email</label>
+            <input type="email" class="form-control" name="email" value="{{ user.email }}" required>
+            {% if not user.is_verified %}
+            <div class="form-text d-flex align-items-center gap-2 text-warning">
+              <i class="fas fa-triangle-exclamation"></i>
+              <span>Email isn't verified yet.</span>
+              <button type="button" class="btn btn-sm btn-soft ms-auto" id="resend-verify-btn">
+                <i class="fas fa-paper-plane me-1"></i> Resend link
+              </button>
+            </div>
+            {% endif %}
+          </div>
+          <button type="submit" class="btn tj-grad-btn"><i class="fas fa-floppy-disk me-2"></i>Save changes</button>
+        </form>
+      </div>
+    </div>
+
+    <div class="card-x mt-4">
+      <div class="card-x-header">
+        <h6><i class="fas fa-lock me-2 text-muted"></i>Password</h6>
+      </div>
+      <div class="card-x-body">
+        <form id="password-form">
+          <div class="row g-3">
+            <div class="col-md-6">
+              <label class="form-label">Current password</label>
+              <input type="password" class="form-control" name="current_password" required autocomplete="current-password">
+            </div>
+            <div class="col-md-6">
+              <label class="form-label">New password</label>
+              <input type="password" class="form-control" name="new_password" required minlength="8" autocomplete="new-password">
+              <div class="form-text">Min 8 chars with upper, lower, and a number.</div>
+            </div>
+          </div>
+          <button type="submit" class="btn btn-soft mt-3"><i class="fas fa-key me-2"></i>Update password</button>
+        </form>
+      </div>
+    </div>
+
+    <div class="card-x mt-4" style="border-color: rgba(239,68,68,.25);">
+      <div class="card-x-header">
+        <h6 style="color: var(--g-danger);"><i class="fas fa-triangle-exclamation me-2"></i>Danger zone</h6>
+      </div>
+      <div class="card-x-body">
+        <div class="d-flex align-items-center">
+          <div>
+            <div class="fw-semibold">Sign out of this device</div>
+            <div class="text-muted small">You can sign back in any time.</div>
+          </div>
+          <a href="/logout" class="btn btn-soft ms-auto" style="color: var(--g-danger);">
+            <i class="fas fa-arrow-right-from-bracket me-2"></i>Sign out
+          </a>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.getElementById('profile-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const form = e.target;
+  const payload = {
+    nickname: form.nickname.value,
+    email: form.email.value,
+  };
+  const btn = form.querySelector('button[type=submit]');
+  const restore = TJ.btnLoading(btn, 'Saving…');
+  const data = await TJ.api.patch('/api/profile', payload,
+    { progress: true, progressLabel: 'Saving profile…', successMsg: 'Profile updated' });
+  restore();
+  if (data && (data.changed || []).includes('email')) {
+    setTimeout(() => location.reload(), 600);
+  }
+});
+
+document.getElementById('resend-verify-btn')?.addEventListener('click', async (e) => {
+  e.preventDefault();
+  const btn = e.currentTarget;
+  const restore = TJ.btnLoading(btn, 'Sending…');
+  const data = await TJ.api.post('/api/profile/verify-email/resend', {},
+    { progress: true, progressLabel: 'Sending verification email…' });
+  restore();
+  if (!data) return;
+  if (data.delivered) {
+    TJ.notify.success('Verification email sent — check your inbox.');
+  } else {
+    TJ.notify.warning('Email service is not configured on this server. Ask the admin to check the logs for your verification link.');
+  }
+});
+
+document.getElementById('password-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const form = e.target;
+  const payload = {
+    current_password: form.current_password.value,
+    new_password: form.new_password.value,
+  };
+  const btn = form.querySelector('button[type=submit]');
+  const restore = TJ.btnLoading(btn, 'Updating…');
+  const data = await TJ.api.post('/api/profile/password', payload,
+    { progress: true, progressLabel: 'Updating password…', successMsg: 'Password updated' });
+  restore();
+  if (data) form.reset();
+});
+</script>
+{% endblock %}

@@ -1,0 +1,149 @@
+{% extends "base.html" %}
+{% block title %}Compose &middot; Gootier{% endblock %}
+
+{% block page_header %}
+<div class="page-header-row">
+  <div>
+    <div class="eyebrow">Create</div>
+    <h1>Compose a post</h1>
+    <p class="lede">Write once, publish to every connected channel.</p>
+  </div>
+</div>
+{% endblock %}
+
+{% block content %}
+{% if not connections %}
+<div class="empty-state">
+  <div class="empty-icon"><i class="fas fa-pen"></i></div>
+  <h5>No connections yet</h5>
+  <p>Connect at least one social account before composing a post.</p>
+  <a href="/connections" class="btn tj-grad-btn">Go to connections</a>
+</div>
+{% else %}
+<div class="row g-4">
+  <div class="col-lg-7">
+    <div class="card-x">
+      <div class="card-x-header">
+        <h6><i class="fas fa-pen me-2 text-muted"></i>Post content</h6>
+      </div>
+      <div class="card-x-body">
+        <form id="compose-form">
+          <div class="mb-3">
+            <label class="form-label">Post to</label>
+            <div class="d-flex flex-wrap gap-2">
+              {% for c in connections %}
+              <label class="form-check m-0">
+                <input class="form-check-input" type="checkbox" name="conn" value="{{ c.id }}" id="conn-{{ c.id }}">
+                <span class="form-check-label small">
+                  {% if c.platform == 'facebook' %}<i class="fab fa-facebook me-1" style="color:#1877f2;"></i>{% endif %}
+                  {{ c.account_name }}
+                </span>
+              </label>
+              {% endfor %}
+            </div>
+          </div>
+
+          <div class="mb-3">
+            <label class="form-label">Content</label>
+            <textarea class="form-control" name="content" rows="5" required
+              placeholder="Write something your audience will care about…"></textarea>
+            <div class="form-text"><span id="char-count">0</span> characters</div>
+          </div>
+
+          <div class="row g-3 mb-3">
+            <div class="col-md-6">
+              <label class="form-label">Image URL (optional)</label>
+              <input class="form-control" name="image_url" type="url" placeholder="https://…">
+            </div>
+            <div class="col-md-6">
+              <label class="form-label">Link URL (optional)</label>
+              <input class="form-control" name="link_url" type="url" placeholder="https://…">
+            </div>
+          </div>
+
+          <div class="mb-4">
+            <label class="form-label">Schedule (leave blank to publish now)</label>
+            <input class="form-control" name="scheduled_at" type="datetime-local">
+          </div>
+
+          <button type="submit" class="btn tj-grad-btn">
+            <i class="fas fa-paper-plane me-2"></i> Publish or schedule
+          </button>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <div class="col-lg-5">
+    <div class="card-x">
+      <div class="card-x-header">
+        <h6><i class="fas fa-eye me-2 text-muted"></i>Preview</h6>
+      </div>
+      <div class="card-x-body">
+        <div id="preview-card" style="border:1px solid var(--g-border-soft); border-radius:12px; padding:1rem; background:#fff;">
+          <div class="d-flex align-items-center mb-2">
+            <div class="stat-icon stat-icon-indigo me-2" style="width:36px;height:36px;font-size:.85rem;">
+              {{ user.username[:1]|upper }}
+            </div>
+            <div>
+              <div class="fw-semibold small">{{ user.username }}</div>
+              <div class="small-meta">Just now</div>
+            </div>
+          </div>
+          <div id="preview-body" class="small text-muted" style="white-space: pre-wrap;">
+            Start typing to see a preview…
+          </div>
+          <img id="preview-image" class="img-fluid mt-2 rounded d-none" alt="">
+          <a id="preview-link" class="small d-none mt-2" target="_blank"></a>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+const form = document.getElementById('compose-form');
+const contentEl = form?.content;
+const preview = document.getElementById('preview-body');
+const previewImg = document.getElementById('preview-image');
+const previewLink = document.getElementById('preview-link');
+const charCount = document.getElementById('char-count');
+
+contentEl?.addEventListener('input', () => {
+  preview.textContent = contentEl.value || 'Start typing to see a preview…';
+  charCount.textContent = contentEl.value.length;
+});
+form?.image_url.addEventListener('input', e => {
+  if (e.target.value) { previewImg.src = e.target.value; previewImg.classList.remove('d-none'); }
+  else previewImg.classList.add('d-none');
+});
+form?.link_url.addEventListener('input', e => {
+  if (e.target.value) { previewLink.href = e.target.value; previewLink.textContent = e.target.value; previewLink.classList.remove('d-none'); }
+  else previewLink.classList.add('d-none');
+});
+
+form?.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const conn_ids = [...form.querySelectorAll('input[name="conn"]:checked')].map(i => parseInt(i.value, 10));
+  if (conn_ids.length === 0) { TJ.notify.warning('Pick at least one account to post to.'); return; }
+  const sched = form.scheduled_at.value;
+  const payload = {
+    content: form.content.value,
+    connection_ids: conn_ids,
+    image_url: form.image_url.value || null,
+    link_url: form.link_url.value || null,
+    scheduled_at: sched ? new Date(sched).toISOString() : null,
+  };
+  const btn = form.querySelector('button[type=submit]');
+  const restore = TJ.btnLoading(btn, 'Submitting…');
+  const data = await TJ.api.post('/api/social/posts', payload, {
+    progress: true, progressLabel: 'Publishing…', successMsg: 'Post submitted',
+  });
+  restore();
+  if (data) form.reset();
+});
+</script>
+{% endblock %}

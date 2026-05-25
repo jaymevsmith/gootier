@@ -1,0 +1,460 @@
+from datetime import datetime
+from typing import List, Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel, Field
+from sqlalchemy.orm import Session
+
+from auth import (
+    get_current_user, hash_password, require_perm, validate_email,
+    validate_password, verify_password,
+)
+from database import get_db
+from models import (
+    EmailBlast, SocialConnection, SocialPost, User, log_action,
+)
+from services.ai_generator import generate_campaign
+from services.quotas import check_and_raise, check_per_call
+from services.social_publish import publish_to_connections
+
+router = APIRouter(prefix="/api")
+
+
+# ------------------------------ Schemas ------------------------------ #
+# Pydantic models MUST live above their handlers — annotations are evaluated
+# at function-definition time on Python < 3.14.
+
+class SocialPostCreate(BaseModel):
+    content: str = Field(..., min_length=1, max_length=5000)
+    connection_ids: List[int]
+    image_url: Optional[str] = None
+    link_url: Optional[str] = None
+    scheduled_at: Optional[datetime] = None
+
+
+class EmailBlastCreate(BaseModel):
+    subject: str = Field(..., min_length=1, max_length=200)
+    body_html: str = Field(..., min_length=1)
+    recipients: List[str]
+    scheduled_at: Optional[datetime] = None
+
+
+class CampaignGenerateRequest(BaseModel):
+    plan: str = Field(..., min_length=10)
+    schedule: str = ""
+    count: int = Field(5, ge=1, le=20)
+    channels: List[str] = ["social_post", "email_blast"]
+
+
+class CampaignItem(BaseModel):
+    kind: str
+    content: str
+    subject: Optional[str] = None
+    link_url: Optional[str] = None
+    image_url: Optional[str] = None
+    scheduled_at: Optional[datetime] = None
+
+
+class RescheduleRequest(BaseModel):
+    scheduled_at: datetime
+
+
+class ProfileUpdate(BaseModel):
+    nickname: Optional[str] = None
+    email: Optional[str] = None
+
+
+class PasswordChange(BaseModel):
+    current_password: str
+    new_password: str
+
+
+class CampaignScheduleRequest(BaseModel):
+    items: List[CampaignItem]
+    connection_ids: List[int] = []
+    recipients: List[str] = []
+
+
+# ------------------------------ Profile ------------------------------ #
+
+@router.patch("/profile")
+async def update_profile(
+    payload: ProfileUpdate,
+    request: Request,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    changed = []
+    email_changed = False
+    if payload.nickname is not None:
+        nickname = payload.nickname.strip()
+        if len(nickname) > 50:
+            raise HTTPException(status_code=400, detail="Display name must be 50 chars or fewer.")
+        user.nickname = nickname or None
+        changed.append("nickname")
+
+    if payload.email is not None:
+        email = payload.email.strip().lower()
+        err = validate_email(email)
+        if err:
+            raise HTTPException(status_code=400, detail=err)
+        if email != user.email:
+            taken = db.query(User).filter(User.email == email, User.id != user.id).first()
+            if taken:
+                raise HTTPException(status_code=400, detail="That email is already in use.")
+            user.email = email
+            user.is_verified = False  # require re-verification of new address
+            changed.append("email")
+            email_changed = True
+
+    if not changed:
+        return {"ok": True, "changed": []}
+
+    db.commit()
+    log_action(db, user, "UPDATE", "User", str(user.id),
+               detail=f"Profile updated: {', '.join(changed)}")
+
+    if email_changed:
+        from routes.auth_routes import trigger_verification_email, _app_url
+        trigger_verification_email(db, user, _app_url(request))
+
+    return {"ok": True, "changed": changed}
+
+
+@router.post("/profile/verify-email/resend")
+async def resend_verification(
+    request: Request,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if user.is_verified:
+        return {"ok": True, "already_verified": True, "delivered": True}
+    from routes.auth_routes import trigger_verification_email, _app_url
+    delivered = trigger_verification_email(db, user, _app_url(request))
+    log_action(db, user, "EMAIL_VERIFY_RESEND", "User", str(user.id),
+               detail=f"delivered={delivered}")
+    return {"ok": True, "delivered": delivered}
+
+
+@router.post("/profile/password")
+async def change_password(
+    payload: PasswordChange,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if not verify_password(payload.current_password, user.hashed_password):
+        raise HTTPException(status_code=400, detail="Current password is incorrect.")
+    err = validate_password(payload.new_password)
+    if err:
+        raise HTTPException(status_code=400, detail=err)
+    if payload.current_password == payload.new_password:
+        raise HTTPException(status_code=400, detail="New password must differ from the current one.")
+
+    user.hashed_password = hash_password(payload.new_password)
+    db.commit()
+    log_action(db, user, "PASSWORD_CHANGE", "User", str(user.id))
+    return {"ok": True}
+
+
+# ------------------------------ Social posts ------------------------------ #
+
+@router.get("/social/connections")
+async def list_connections(
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    items = db.query(SocialConnection).filter(
+        SocialConnection.user_id == user.id, SocialConnection.is_active == True,  # noqa: E712
+    ).all()
+    return [
+        {"id": c.id, "platform": c.platform, "account_name": c.account_name,
+         "page_id": c.page_id, "expires_at": c.expires_at}
+        for c in items
+    ]
+
+
+@router.delete("/social/connections/{conn_id}")
+async def disconnect(
+    conn_id: int,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    conn = db.query(SocialConnection).filter(
+        SocialConnection.id == conn_id, SocialConnection.user_id == user.id,
+    ).first()
+    if not conn:
+        raise HTTPException(status_code=404, detail="Connection not found")
+    conn.is_active = False
+    db.commit()
+    log_action(db, user, "DELETE", "SocialConnection", str(conn.id))
+    return {"ok": True}
+
+
+@router.post("/social/posts")
+async def create_post(
+    payload: SocialPostCreate,
+    user: User = Depends(require_perm("marketing.social_post")),
+    db: Session = Depends(get_db),
+):
+    owned = db.query(SocialConnection).filter(
+        SocialConnection.id.in_(payload.connection_ids),
+        SocialConnection.user_id == user.id,
+        SocialConnection.is_active == True,  # noqa: E712
+    ).all()
+    if len(owned) != len(payload.connection_ids):
+        raise HTTPException(status_code=400, detail="One or more connections invalid")
+
+    check_and_raise(db, user, "posts_per_month")
+
+    post = SocialPost(
+        user_id=user.id,
+        content=payload.content,
+        image_url=payload.image_url,
+        link_url=payload.link_url,
+        connection_ids=",".join(str(c.id) for c in owned),
+        scheduled_at=payload.scheduled_at,
+        status="pending",
+    )
+    db.add(post)
+    db.commit()
+    db.refresh(post)
+
+    if not payload.scheduled_at:
+        results = await publish_to_connections(
+            owned, post.content, post.link_url, post.image_url,
+        )
+        successes = sum(1 for r in results.values() if r.get("success"))
+        post.status = ("published" if successes == len(owned)
+                       else "partial" if successes else "failed")
+        post.published_at = datetime.utcnow()
+        import json as _json
+        post.publish_results = _json.dumps({str(k): v for k, v in results.items()})
+        db.commit()
+
+    log_action(db, user, "CREATE", "SocialPost", str(post.id))
+    return {"id": post.id, "status": post.status}
+
+
+@router.patch("/social/posts/{post_id}/reschedule")
+async def reschedule_post(
+    post_id: int,
+    payload: RescheduleRequest,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    post = db.query(SocialPost).filter(
+        SocialPost.id == post_id, SocialPost.user_id == user.id,
+    ).first()
+    if not post:
+        raise HTTPException(status_code=404, detail="Post not found")
+    if post.status != "pending":
+        raise HTTPException(status_code=400, detail="Only pending posts can be rescheduled")
+    if payload.scheduled_at < datetime.utcnow():
+        raise HTTPException(status_code=400, detail="Cannot reschedule into the past")
+    post.scheduled_at = payload.scheduled_at
+    db.commit()
+    log_action(db, user, "UPDATE", "SocialPost", str(post.id),
+               detail=f"Rescheduled to {payload.scheduled_at.isoformat()}")
+    return {"ok": True, "scheduled_at": post.scheduled_at}
+
+
+@router.patch("/email-blasts/{blast_id}/reschedule")
+async def reschedule_blast(
+    blast_id: int,
+    payload: RescheduleRequest,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    blast = db.query(EmailBlast).filter(
+        EmailBlast.id == blast_id, EmailBlast.user_id == user.id,
+    ).first()
+    if not blast:
+        raise HTTPException(status_code=404, detail="Blast not found")
+    if blast.status != "pending":
+        raise HTTPException(status_code=400, detail="Only pending blasts can be rescheduled")
+    if payload.scheduled_at < datetime.utcnow():
+        raise HTTPException(status_code=400, detail="Cannot reschedule into the past")
+    blast.scheduled_at = payload.scheduled_at
+    db.commit()
+    log_action(db, user, "UPDATE", "EmailBlast", str(blast.id),
+               detail=f"Rescheduled to {payload.scheduled_at.isoformat()}")
+    return {"ok": True, "scheduled_at": blast.scheduled_at}
+
+
+@router.delete("/social/posts/{post_id}/cancel")
+async def cancel_post(
+    post_id: int,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    post = db.query(SocialPost).filter(
+        SocialPost.id == post_id, SocialPost.user_id == user.id,
+    ).first()
+    if not post:
+        raise HTTPException(status_code=404, detail="Post not found")
+    if post.status != "pending":
+        raise HTTPException(status_code=400, detail="Only pending posts can be cancelled")
+    post.status = "cancelled"
+    db.commit()
+    return {"ok": True}
+
+
+# ------------------------------ Email blasts ------------------------------ #
+
+@router.delete("/email-blasts/{blast_id}/cancel")
+async def cancel_blast(
+    blast_id: int,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    blast = db.query(EmailBlast).filter(
+        EmailBlast.id == blast_id, EmailBlast.user_id == user.id,
+    ).first()
+    if not blast:
+        raise HTTPException(status_code=404, detail="Blast not found")
+    if blast.status != "pending":
+        raise HTTPException(status_code=400, detail="Only pending blasts can be cancelled")
+    blast.status = "cancelled"
+    db.commit()
+    log_action(db, user, "DELETE", "EmailBlast", str(blast.id), detail="Cancelled by user")
+    return {"ok": True}
+
+
+@router.post("/email-blasts")
+async def create_blast(
+    payload: EmailBlastCreate,
+    user: User = Depends(require_perm("marketing.email_blast")),
+    db: Session = Depends(get_db),
+):
+    check_and_raise(db, user, "blasts_per_month")
+    check_per_call(db, user, "blast_recipients", len(payload.recipients))
+
+    blast = EmailBlast(
+        user_id=user.id,
+        subject=payload.subject,
+        body_html=payload.body_html,
+        recipient_list="\n".join(payload.recipients),
+        recipient_count=len(payload.recipients),
+        scheduled_at=payload.scheduled_at,
+        status="pending",
+    )
+    db.add(blast)
+    db.commit()
+    db.refresh(blast)
+
+    if not payload.scheduled_at:
+        from services.email_utils import send_blast_email
+        sent, failed = send_blast_email(blast.subject, blast.body_html, payload.recipients)
+        blast.sent_count = sent
+        blast.failed_count = failed
+        blast.status = ("sent" if failed == 0 and sent > 0
+                        else "partial" if sent > 0 else "failed")
+        db.commit()
+
+    log_action(db, user, "CREATE", "EmailBlast", str(blast.id))
+    return {"id": blast.id, "status": blast.status}
+
+
+# ------------------------------ AI generation ------------------------------ #
+
+@router.post("/ai/generate")
+async def ai_generate(
+    payload: CampaignGenerateRequest,
+    user: User = Depends(require_perm("marketing.ai_generate")),
+    db: Session = Depends(get_db),
+):
+    check_and_raise(db, user, "ai_generations_per_month")
+    try:
+        result = generate_campaign(
+            plan=payload.plan,
+            schedule=payload.schedule,
+            count=payload.count,
+            channels=payload.channels,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"AI generation failed: {e}")
+    log_action(db, user, "AI_GENERATE", "Campaign",
+               detail=f"Generated {len((result or {}).get('items', []))} item(s)")
+    return result
+
+
+@router.post("/ai/schedule")
+async def ai_schedule(
+    payload: CampaignScheduleRequest,
+    user: User = Depends(require_perm("marketing.ai_generate")),
+    db: Session = Depends(get_db),
+):
+    if not payload.items:
+        raise HTTPException(status_code=400, detail="No items to schedule")
+
+    needs_social = any(i.kind == "social_post" for i in payload.items)
+    needs_email = any(i.kind == "email_blast" for i in payload.items)
+
+    owned: List[SocialConnection] = []
+    if needs_social:
+        if not payload.connection_ids:
+            raise HTTPException(status_code=400, detail="Pick at least one social connection")
+        owned = db.query(SocialConnection).filter(
+            SocialConnection.id.in_(payload.connection_ids),
+            SocialConnection.user_id == user.id,
+            SocialConnection.is_active == True,  # noqa: E712
+        ).all()
+        if len(owned) != len(payload.connection_ids):
+            raise HTTPException(status_code=400, detail="One or more connections invalid")
+
+    if needs_email:
+        if not user.perm("marketing.email_blast"):
+            raise HTTPException(
+                status_code=403,
+                detail="Email blasts require a paid plan — upgrade to schedule them.",
+            )
+        if not payload.recipients:
+            raise HTTPException(status_code=400, detail="Add at least one recipient for email blasts")
+        check_per_call(db, user, "blast_recipients", len(payload.recipients))
+
+    # Pre-flight monthly quotas: we'll create N posts and M blasts in one shot.
+    new_posts = sum(1 for i in payload.items if i.kind == "social_post")
+    new_blasts = sum(1 for i in payload.items if i.kind == "email_blast")
+    if new_posts:
+        check_and_raise(db, user, "posts_per_month", increment=new_posts)
+    if new_blasts:
+        check_and_raise(db, user, "blasts_per_month", increment=new_blasts)
+
+    conn_csv = ",".join(str(c.id) for c in owned)
+    recipients_block = "\n".join(payload.recipients)
+
+    created_posts = 0
+    created_blasts = 0
+
+    for item in payload.items:
+        if item.kind == "social_post":
+            db.add(SocialPost(
+                user_id=user.id,
+                content=item.content,
+                image_url=item.image_url,
+                link_url=item.link_url,
+                connection_ids=conn_csv,
+                scheduled_at=item.scheduled_at,
+                status="pending",
+                ai_generated=True,
+            ))
+            created_posts += 1
+        elif item.kind == "email_blast":
+            db.add(EmailBlast(
+                user_id=user.id,
+                subject=item.subject or "(no subject)",
+                body_html=item.content,
+                recipient_list=recipients_block,
+                recipient_count=len(payload.recipients),
+                scheduled_at=item.scheduled_at,
+                status="pending",
+                ai_generated=True,
+            ))
+            created_blasts += 1
+
+    db.commit()
+    log_action(
+        db, user, "CREATE", "Campaign",
+        detail=f"AI campaign: {created_posts} post(s), {created_blasts} blast(s)",
+    )
+    return {"posts": created_posts, "blasts": created_blasts}

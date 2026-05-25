@@ -1,0 +1,116 @@
+{% extends "base.html" %}
+{% block title %}Scheduled &middot; Gootier{% endblock %}
+
+{% block page_header %}
+<div class="page-header-row">
+  <div>
+    <div class="eyebrow">Schedule</div>
+    <h1>Queue</h1>
+    <p class="lede">Posts and email blasts waiting to fire. Cancel anything before its time comes.</p>
+  </div>
+  <div class="actions">
+    <a href="/compose" class="btn btn-soft"><i class="fas fa-pen me-2"></i>New post</a>
+    <a href="/ai-builder" class="btn tj-grad-btn"><i class="fas fa-wand-magic-sparkles me-2"></i>AI campaign</a>
+  </div>
+</div>
+{% endblock %}
+
+{% block content %}
+<div class="row g-4">
+  <div class="col-lg-7">
+    <div class="card-x">
+      <div class="card-x-header">
+        <h6><i class="fas fa-share-nodes me-2 text-muted"></i>Social posts <span class="hl hl-muted ms-2">{{ posts|length }}</span></h6>
+      </div>
+      <div class="card-x-body p-0">
+        {% if posts %}
+          {% for p in posts %}
+          <div class="d-flex align-items-start gap-3 px-4 py-3" style="border-bottom:1px solid var(--g-border-soft);">
+            <div class="stat-icon stat-icon-purple" style="width:36px;height:36px;font-size:.85rem;flex-shrink:0;">
+              <i class="fas fa-share-nodes"></i>
+            </div>
+            <div class="flex-grow-1 min-width-0">
+              <div class="d-flex align-items-center">
+                <span class="small-meta font-monospace">{{ p.scheduled_at.strftime('%a %b %d &middot; %H:%M UTC') if p.scheduled_at else 'immediate' }}</span>
+                {% if p.ai_generated %}<span class="hl hl-purple ms-2"><i class="fas fa-wand-magic-sparkles me-1"></i>AI</span>{% endif %}
+              </div>
+              <div class="mt-1" style="white-space:pre-wrap;">{{ p.content[:200] }}{% if p.content|length > 200 %}…{% endif %}</div>
+            </div>
+            <button class="btn btn-soft btn-sm" data-cancel-post="{{ p.id }}">
+              <i class="fas fa-xmark me-1"></i> Cancel
+            </button>
+          </div>
+          {% endfor %}
+        {% else %}
+        <div class="empty-state" style="border:none; padding:2rem 1rem;">
+          <div class="empty-icon"><i class="fas fa-share-nodes"></i></div>
+          <h5>No scheduled posts</h5>
+          <p>Compose or generate something to fill your queue.</p>
+        </div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  <div class="col-lg-5">
+    <div class="card-x">
+      <div class="card-x-header">
+        <h6><i class="fas fa-envelope me-2 text-muted"></i>Email blasts <span class="hl hl-muted ms-2">{{ blasts|length }}</span></h6>
+      </div>
+      <div class="card-x-body p-0">
+        {% if blasts %}
+          {% for b in blasts %}
+          <div class="d-flex align-items-start gap-3 px-4 py-3" style="border-bottom:1px solid var(--g-border-soft);">
+            <div class="stat-icon stat-icon-warning" style="width:36px;height:36px;font-size:.85rem;flex-shrink:0;">
+              <i class="fas fa-envelope"></i>
+            </div>
+            <div class="flex-grow-1 min-width-0">
+              <div class="small-meta font-monospace">{{ b.scheduled_at.strftime('%a %b %d &middot; %H:%M UTC') if b.scheduled_at else 'immediate' }}</div>
+              <div class="fw-semibold mt-1">{{ b.subject }}</div>
+              <div class="small-meta mt-1">{{ b.recipient_count }} recipient{{ '' if b.recipient_count == 1 else 's' }}</div>
+            </div>
+            <button class="btn btn-soft btn-sm" data-cancel-blast="{{ b.id }}">
+              <i class="fas fa-xmark me-1"></i> Cancel
+            </button>
+          </div>
+          {% endfor %}
+        {% else %}
+        <div class="empty-state" style="border:none; padding:2rem 1rem;">
+          <div class="empty-icon"><i class="fas fa-envelope"></i></div>
+          <h5>No scheduled blasts</h5>
+          <p class="mb-0 small">Create one in the AI builder.</p>
+        </div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.querySelectorAll('[data-cancel-post]').forEach(btn => {
+  btn.addEventListener('click', async () => {
+    const ok = await TJ.confirm("Cancel this scheduled post? This can't be undone.", {
+      title: 'Cancel scheduled post', okLabel: 'Yes, cancel', danger: true,
+    });
+    if (!ok) return;
+    const id = btn.dataset.cancelPost;
+    const data = await TJ.api.del(`/api/social/posts/${id}/cancel`, { successMsg: 'Cancelled' });
+    if (data) location.reload();
+  });
+});
+
+document.querySelectorAll('[data-cancel-blast]').forEach(btn => {
+  btn.addEventListener('click', async () => {
+    const ok = await TJ.confirm("Cancel this scheduled email blast? This can't be undone.", {
+      title: 'Cancel scheduled blast', okLabel: 'Yes, cancel', danger: true,
+    });
+    if (!ok) return;
+    const id = btn.dataset.cancelBlast;
+    const data = await TJ.api.del(`/api/email-blasts/${id}/cancel`, { successMsg: 'Cancelled' });
+    if (data) location.reload();
+  });
+});
+</script>
+{% endblock %}

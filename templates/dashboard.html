@@ -1,0 +1,156 @@
+{% extends "base.html" %}
+{% block title %}Dashboard &middot; Gootier{% endblock %}
+
+{% block page_header %}
+<div class="page-header-row">
+  <div>
+    <div class="eyebrow">Workspace</div>
+    <h1>Welcome back, {{ user.username }}</h1>
+    <p class="lede">Here's what's happening across your channels.</p>
+  </div>
+  <div class="actions">
+    <a href="/compose" class="btn btn-soft"><i class="fas fa-pen me-2"></i>New post</a>
+    <a href="/ai-builder" class="btn tj-grad-btn"><i class="fas fa-wand-magic-sparkles me-2"></i>AI campaign</a>
+  </div>
+</div>
+{% endblock %}
+
+{% block content %}
+<div class="stat-grid">
+  <div class="stat-card">
+    <div class="stat-icon stat-icon-indigo"><i class="fas fa-link"></i></div>
+    <div>
+      <div class="stat-value">{{ connections }}</div>
+      <div class="stat-label">Connected accounts</div>
+    </div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-icon stat-icon-purple"><i class="fas fa-share-nodes"></i></div>
+    <div>
+      <div class="stat-value">{{ pending_posts }}</div>
+      <div class="stat-label">Pending social posts</div>
+    </div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-icon stat-icon-warning"><i class="fas fa-envelope"></i></div>
+    <div>
+      <div class="stat-value">{{ pending_blasts }}</div>
+      <div class="stat-label">Pending email blasts</div>
+    </div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-icon stat-icon-success"><i class="fas fa-medal"></i></div>
+    <div>
+      <div class="stat-value text-capitalize">{{ user.tier }}</div>
+      <div class="stat-label">Your current plan</div>
+    </div>
+  </div>
+</div>
+
+<div class="card-x mb-4">
+  <div class="card-x-header">
+    <h6><i class="fas fa-gauge me-2 text-muted"></i>Usage this month
+      <span class="ms-2 hl hl-muted">{{ user.tier|capitalize }} plan</span>
+    </h6>
+    <a href="/billing" class="ms-auto small">Manage plan &rarr;</a>
+  </div>
+  <div class="card-x-body">
+    <div class="row g-4">
+      {% for key, u in usage.items() %}
+      {% set pct = 0 if u.quota == 0 else ((u.used / u.quota) * 100)|int %}
+      {% set bar_color = 'var(--g-success)' if pct < 60 else ('var(--g-warning)' if pct < 90 else 'var(--g-danger)') %}
+      <div class="col-md-3 col-sm-6">
+        <div class="small text-muted text-uppercase" style="letter-spacing:.06em; font-size:.7rem;">{{ u.label }}</div>
+        <div class="d-flex align-items-baseline gap-2 mb-1">
+          <span class="fw-bold" style="font-size:1.3rem;">{{ u.used }}</span>
+          <span class="text-muted small">
+            {% if u.unlimited %}/ &infin;{% else %}/ {{ u.quota }}{% endif %}
+          </span>
+        </div>
+        <div style="height:6px; background:#eef0f6; border-radius:99px; overflow:hidden;">
+          <div style="height:100%; width:{{ pct if not u.unlimited else 100 }}%; background:{{ bar_color if not u.unlimited else 'var(--g-grad)' }}; transition: width .3s ease;"></div>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+</div>
+
+{% set ready = connections > 0 and (pending_posts + pending_blasts) > 0 %}
+<div class="row g-3">
+  <div class="col-lg-7">
+    {% if not ready %}
+    <div class="card-x">
+      <div class="card-x-header">
+        <h6><i class="fas fa-rocket me-2 text-muted"></i>Get started in 3 steps</h6>
+      </div>
+      <div class="card-x-body">
+        <div class="d-flex align-items-start mb-3">
+          <span class="hl {{ 'hl-success' if connections > 0 else 'hl-indigo' }} me-3">{% if connections > 0 %}<i class="fas fa-check"></i>{% else %}1{% endif %}</span>
+          <div>
+            <div class="fw-semibold">Connect a social account</div>
+            <p class="text-muted small mb-1">Grant Gootier permission to post on your behalf via OAuth.</p>
+            {% if connections == 0 %}<a href="/connections" class="small">Go to connections &rarr;</a>{% endif %}
+          </div>
+        </div>
+        <div class="d-flex align-items-start mb-3">
+          <span class="hl {{ 'hl-success' if (pending_posts + pending_blasts) > 0 else 'hl-purple' }} me-3">{% if (pending_posts + pending_blasts) > 0 %}<i class="fas fa-check"></i>{% else %}2{% endif %}</span>
+          <div>
+            <div class="fw-semibold">Compose or generate your first post</div>
+            <p class="text-muted small mb-1">Write it yourself, or let the AI draft a full campaign from your plan.</p>
+            {% if (pending_posts + pending_blasts) == 0 %}<a href="/ai-builder" class="small">Open AI builder &rarr;</a>{% endif %}
+          </div>
+        </div>
+        <div class="d-flex align-items-start">
+          <span class="hl hl-success me-3">3</span>
+          <div>
+            <div class="fw-semibold">Schedule and forget</div>
+            <p class="text-muted small mb-0">Our scheduler fires every 60 seconds and publishes the moment things are due.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+    {% else %}
+    <div class="card-x">
+      <div class="card-x-header">
+        <h6><i class="fas fa-bolt me-2 text-muted"></i>Recent activity</h6>
+        <a href="/calendar" class="ms-auto small">View calendar &rarr;</a>
+      </div>
+      <div class="card-x-body">
+        <p class="mb-3">You're set up &mdash; <strong>{{ pending_posts + pending_blasts }}</strong> item(s) waiting to fire across <strong>{{ connections }}</strong> connected account(s).</p>
+        <div class="d-flex gap-2 flex-wrap">
+          <a href="/compose" class="btn btn-soft btn-sm"><i class="fas fa-pen me-2"></i>New post</a>
+          <a href="/ai-builder" class="btn btn-soft btn-sm"><i class="fas fa-wand-magic-sparkles me-2"></i>AI campaign</a>
+          <a href="/scheduled" class="btn btn-soft btn-sm"><i class="fas fa-clock me-2"></i>Queue</a>
+        </div>
+      </div>
+    </div>
+    {% endif %}
+  </div>
+
+  <div class="col-lg-5">
+    <div class="card-x">
+      <div class="card-x-header">
+        <h6><i class="fas fa-calendar-day me-2 text-muted"></i>What's queued</h6>
+      </div>
+      <div class="card-x-body">
+        <div class="d-flex align-items-center mb-3">
+          <div class="stat-icon stat-icon-info me-3"><i class="fas fa-share-nodes"></i></div>
+          <div>
+            <div class="fw-semibold">{{ pending_posts }} social {{ 'post' if pending_posts == 1 else 'posts' }}</div>
+            <div class="text-muted small">Waiting in the queue</div>
+          </div>
+        </div>
+        <div class="d-flex align-items-center mb-3">
+          <div class="stat-icon stat-icon-warning me-3"><i class="fas fa-envelope"></i></div>
+          <div>
+            <div class="fw-semibold">{{ pending_blasts }} email {{ 'blast' if pending_blasts == 1 else 'blasts' }}</div>
+            <div class="text-muted small">Pending delivery</div>
+          </div>
+        </div>
+        <a href="/scheduled" class="btn btn-soft btn-sm w-100">View schedule &rarr;</a>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

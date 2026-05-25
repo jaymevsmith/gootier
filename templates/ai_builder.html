@@ -1,0 +1,166 @@
+{% extends "base.html" %}
+{% block title %}AI builder &middot; Gootier{% endblock %}
+
+{% block page_header %}
+<div class="page-header-row">
+  <div>
+    <div class="eyebrow">Create</div>
+    <h1>AI campaign builder</h1>
+    <p class="lede">Describe your plan &mdash; we'll draft posts and emails ready to schedule.</p>
+  </div>
+</div>
+{% endblock %}
+
+{% block content %}
+<div class="card-x mb-4">
+  <div class="card-x-header">
+    <h6><i class="fas fa-lightbulb me-2 text-muted"></i>Step 1 &middot; Your campaign brief</h6>
+  </div>
+  <div class="card-x-body">
+    <form id="ai-form">
+      <div class="mb-3">
+        <label class="form-label">Marketing plan &amp; brand context</label>
+        <textarea class="form-control" name="plan" rows="6" required
+          placeholder="We're a Brooklyn-based oat-milk coffee brand launching a summer iced-latte SKU. Target: 25-40 yr olds, urban, value-conscious. Voice: warm, witty, never salesy. Goal: 500 sign-ups for the launch waitlist."></textarea>
+      </div>
+      <div class="row g-3 mb-3">
+        <div class="col-md-6">
+          <label class="form-label">Schedule cadence</label>
+          <input class="form-control" name="schedule"
+            placeholder="3 posts per week + 1 email blast on Sundays, over the next 3 weeks">
+        </div>
+        <div class="col-md-3">
+          <label class="form-label">Number of items</label>
+          <input class="form-control" name="count" type="number" min="1" max="20" value="6">
+        </div>
+        <div class="col-md-3">
+          <label class="form-label">Channels</label>
+          <select class="form-select" name="channels">
+            <option value="social_post,email_blast">Social + email</option>
+            <option value="social_post">Social only</option>
+            <option value="email_blast">Email only</option>
+          </select>
+        </div>
+      </div>
+      <button type="submit" class="btn tj-grad-btn">
+        <i class="fas fa-wand-magic-sparkles me-2"></i> Generate campaign
+      </button>
+    </form>
+  </div>
+</div>
+
+<div id="ai-results" class="card-x d-none">
+  <div class="card-x-header d-flex">
+    <h6 class="mb-0"><i class="fas fa-list-check me-2 text-muted"></i>Step 2 &middot; Review &amp; schedule</h6>
+    <span class="ms-auto small text-muted" id="ai-count"></span>
+  </div>
+  <div class="card-x-body">
+    <div id="ai-list" class="mb-4"></div>
+
+    <div id="conn-section" class="mb-3 d-none">
+      <label class="form-label">Post social items to</label>
+      <div id="conn-picker" class="d-flex flex-wrap gap-2 small-meta">Loading…</div>
+    </div>
+
+    <div id="recipients-section" class="mb-3 d-none">
+      <label class="form-label">Email recipients (one per line)</label>
+      <textarea id="recipients" class="form-control" rows="4"
+        placeholder="alice@example.com&#10;bob@example.com"></textarea>
+    </div>
+
+    <button id="schedule-btn" class="btn tj-grad-btn">
+      <i class="fas fa-calendar-check me-2"></i> Schedule all
+    </button>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let lastItems = [];
+
+async function loadConnections() {
+  const data = await TJ.api.get('/api/social/connections');
+  const picker = document.getElementById('conn-picker');
+  if (!data || data.length === 0) {
+    picker.innerHTML = `<div class="alert alert-warning mb-0 w-100">No active social connections. <a href="/connections">Connect one</a> before scheduling social items.</div>`;
+    return [];
+  }
+  picker.innerHTML = data.map(c => `
+    <label class="form-check m-0">
+      <input class="form-check-input conn-check" type="checkbox" value="${c.id}" id="ai-conn-${c.id}">
+      <span class="form-check-label small">
+        <i class="fab fa-facebook me-1" style="color:#1877f2;"></i>${c.account_name}
+      </span>
+    </label>
+  `).join('');
+  return data;
+}
+
+function escape(s) { return (s || '').replace(/</g, '&lt;'); }
+
+document.getElementById('ai-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const form = e.target;
+  const payload = {
+    plan: form.plan.value,
+    schedule: form.schedule.value,
+    count: parseInt(form.count.value, 10),
+    channels: form.channels.value.split(','),
+  };
+  const btn = form.querySelector('button[type=submit]');
+  const restore = TJ.btnLoading(btn, 'Generating…');
+  const data = await TJ.api.post('/api/ai/generate', payload, {
+    progress: true, progressLabel: 'AI drafting your campaign…',
+  });
+  restore();
+  if (!data) return;
+
+  lastItems = data.items || [];
+  const list = document.getElementById('ai-list');
+  list.innerHTML = '';
+  lastItems.forEach((item) => {
+    const kindIcon = item.kind === 'social_post' ? 'fa-share-nodes' : 'fa-envelope';
+    const kindClass = item.kind === 'social_post' ? 'hl-purple' : 'hl-info';
+    const card = document.createElement('div');
+    card.className = 'mb-3';
+    card.innerHTML = `
+      <div style="background:#fafbfd;border:1px solid var(--g-border-soft);border-radius:12px;padding:1rem;">
+        <div class="d-flex align-items-center mb-2">
+          <span class="hl ${kindClass}"><i class="fas ${kindIcon} me-1"></i>${item.kind === 'social_post' ? 'Social' : 'Email'}</span>
+          <small class="ms-auto text-muted">${item.scheduled_at || 'immediate'}</small>
+        </div>
+        ${item.subject ? `<div class="fw-semibold mb-1">${escape(item.subject)}</div>` : ''}
+        <div class="small text-muted" style="white-space:pre-wrap;">${escape(item.content)}</div>
+      </div>`;
+    list.appendChild(card);
+  });
+
+  const hasSocial = lastItems.some(i => i.kind === 'social_post');
+  const hasEmail = lastItems.some(i => i.kind === 'email_blast');
+  document.getElementById('conn-section').classList.toggle('d-none', !hasSocial);
+  document.getElementById('recipients-section').classList.toggle('d-none', !hasEmail);
+  document.getElementById('ai-count').textContent =
+    `${lastItems.length} item(s) — ${lastItems.filter(i => i.kind==='social_post').length} social, ${lastItems.filter(i => i.kind==='email_blast').length} email`;
+  document.getElementById('ai-results').classList.remove('d-none');
+  if (hasSocial) await loadConnections();
+  document.getElementById('ai-results').scrollIntoView({ behavior: 'smooth', block: 'start' });
+});
+
+document.getElementById('schedule-btn').addEventListener('click', async () => {
+  if (lastItems.length === 0) return;
+  const conn_ids = [...document.querySelectorAll('.conn-check:checked')].map(i => parseInt(i.value, 10));
+  const recipients = document.getElementById('recipients').value
+    .split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+  const btn = document.getElementById('schedule-btn');
+  const restore = TJ.btnLoading(btn, 'Scheduling…');
+  const data = await TJ.api.post('/api/ai/schedule', {
+    items: lastItems, connection_ids: conn_ids, recipients,
+  }, {
+    progress: true, progressLabel: 'Saving campaign…', successMsg: 'Campaign scheduled',
+  });
+  restore();
+  if (data) setTimeout(() => { window.location.href = '/scheduled'; }, 800);
+});
+</script>
+{% endblock %}

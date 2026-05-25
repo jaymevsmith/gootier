@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+{% block title %}Billing &middot; Gootier{% endblock %}
+
+{% block page_header %}
+<div class="page-header-row">
+  <div>
+    <div class="eyebrow">Account</div>
+    <h1>Plans &amp; billing</h1>
+    <p class="lede">
+      You're on the <span class="hl hl-indigo">{{ user.tier }}</span> plan.
+      {% if user.subscribed_until %}Renews {{ user.subscribed_until.strftime('%b %d, %Y') }}.{% endif %}
+    </p>
+  </div>
+  <div class="actions">
+    {% if has_subscription %}
+    <button class="btn btn-soft" id="manage-btn">
+      <i class="fas fa-gear me-2"></i> Manage subscription
+    </button>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}
+
+{% block content %}
+{% if request.query_params.get('upgraded') %}
+  <div class="alert alert-success">Subscription updated — thanks!</div>
+{% elif request.query_params.get('cancelled') %}
+  <div class="alert alert-secondary">Checkout cancelled. No charge was made.</div>
+{% endif %}
+
+{% if not stripe_configured %}
+  <div class="alert alert-warning">
+    <strong>Stripe is not configured.</strong> Set <code>STRIPE_SECRET_KEY</code>,
+    <code>STRIPE_WEBHOOK_SECRET</code>, and the <code>STRIPE_PRICE_*</code> env vars to enable checkout.
+  </div>
+{% endif %}
+
+<div class="tier-grid">
+  {% for t in tiers %}
+  <div class="tier-card {% if t.key == 'silver' %}featured{% endif %}">
+    {% if t.current %}<span class="hl hl-indigo current-badge">Current</span>{% endif %}
+    <div class="tier-name">{{ t.name }}</div>
+    <div class="tier-blurb">{{ t.blurb }}</div>
+    <div class="tier-price">
+      {% if t.key == 'bronze' %}$9<small>/month</small>
+      {% elif t.key == 'silver' %}$29<small>/month</small>
+      {% elif t.key == 'gold' %}$99<small>/month</small>{% endif %}
+    </div>
+    <ul class="features">
+      {% for f in t.features %}
+      <li><i class="fas fa-check"></i> {{ f }}</li>
+      {% endfor %}
+    </ul>
+    <button class="btn {% if t.key == 'silver' %}tj-grad-btn{% else %}btn-soft{% endif %} mt-auto"
+            data-upgrade="{{ t.key }}"
+            {% if t.current or not t.configured or not stripe_configured %}disabled{% endif %}
+            {% if not t.configured %}title="Set {{ t.price_id_env }} to enable"{% endif %}>
+      {% if t.current %}Current plan
+      {% elif not t.configured %}Not configured
+      {% else %}Upgrade to {{ t.name }}{% endif %}
+    </button>
+  </div>
+  {% endfor %}
+</div>
+
+<div class="text-center mt-5">
+  <p class="small text-muted">All plans include unlimited team members, OAuth-based social posting, AI campaign generation, and our 60-second scheduler.</p>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.querySelectorAll('[data-upgrade]').forEach(btn => {
+  btn.addEventListener('click', async () => {
+    const tier = btn.dataset.upgrade;
+    const restore = TJ.btnLoading(btn, 'Redirecting…');
+    const data = await TJ.api.post('/api/billing/checkout', { tier },
+      { progress: true, progressLabel: 'Creating checkout…' });
+    restore();
+    if (data && data.url) window.location.href = data.url;
+  });
+});
+document.getElementById('manage-btn')?.addEventListener('click', async () => {
+  const btn = document.getElementById('manage-btn');
+  const restore = TJ.btnLoading(btn, 'Opening…');
+  const data = await TJ.api.post('/api/billing/portal', {});
+  restore();
+  if (data && data.url) window.location.href = data.url;
+});
+</script>
+{% endblock %}

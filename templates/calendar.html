@@ -1,0 +1,228 @@
+{% extends "base.html" %}
+{% block title %}Calendar &middot; Gootier{% endblock %}
+
+{% block page_header %}
+<div class="page-header-row">
+  <div>
+    <div class="eyebrow">Schedule</div>
+    <h1>Calendar</h1>
+    <p class="lede">A bird's-eye view of every scheduled post and blast.</p>
+  </div>
+  <div class="actions">
+    <a href="/scheduled" class="btn btn-soft"><i class="fas fa-list me-2"></i>List view</a>
+    <a href="/ai-builder" class="btn tj-grad-btn"><i class="fas fa-wand-magic-sparkles me-2"></i>AI campaign</a>
+  </div>
+</div>
+{% endblock %}
+
+{% block content %}
+<div class="calendar-toolbar">
+  <div class="cal-nav">
+    <a href="/calendar?month={{ prev_anchor }}" class="btn btn-soft btn-sm" title="Previous month">
+      <i class="fas fa-chevron-left"></i>
+    </a>
+    <h4 class="cal-month-label">{{ month_label }}</h4>
+    <a href="/calendar?month={{ next_anchor }}" class="btn btn-soft btn-sm" title="Next month">
+      <i class="fas fa-chevron-right"></i>
+    </a>
+    <a href="/calendar" class="btn btn-soft btn-sm ms-2">Today</a>
+  </div>
+  <div class="cal-legend">
+    <span class="cal-legend-dot" style="background: var(--g-tint-purple); color: var(--g-primary-2);"></span>
+    <span class="small text-muted">Social</span>
+    <span class="cal-legend-dot ms-3" style="background: var(--g-tint-warning); color: #8a5a08;"></span>
+    <span class="small text-muted">Email</span>
+    <span class="small text-muted ms-3">{{ total_items }} item{{ '' if total_items == 1 else 's' }} this month</span>
+  </div>
+</div>
+
+<div class="calendar-grid">
+  {% for dow in ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'] %}
+    <div class="calendar-head">{{ dow }}</div>
+  {% endfor %}
+
+  {% for week in weeks %}
+    {% for day in week %}
+      <div class="calendar-day{% if day.month != anchor.month %} outside{% endif %}{% if day == today %} today{% endif %}{% if day < today %} past{% endif %}"
+           data-date="{{ day.isoformat() }}">
+        <div class="d-flex align-items-center">
+          <span class="day-num">{{ day.day }}</span>
+          {% if day == today %}<span class="small-meta ms-1">Today</span>{% endif %}
+        </div>
+        {% set items = items_by_date.get(day, []) %}
+        {% if items|length > 0 %}
+        <div class="day-count">{{ items|length }}</div>
+        {% endif %}
+        <div class="day-items">
+          {% for item in items %}
+            <div class="cal-item {{ 'cal-item-email' if item.kind == 'email_blast' else 'cal-item-social' }} cal-status-{{ item.status }}"
+                 role="button" tabindex="0"
+                 draggable="{{ 'true' if item.status == 'pending' else 'false' }}"
+                 data-kind="{{ item.kind }}"
+                 data-id="{{ item.id }}"
+                 data-iso="{{ item.iso }}"
+                 data-time="{{ item.time }}"
+                 data-subject="{{ item.subject|e if item.subject else '' }}"
+                 data-content="{{ item.content|e }}"
+                 data-status="{{ item.status }}"
+                 data-ai="{{ '1' if item.ai else '0' }}"
+                 data-recipients="{{ item.recipients if item.recipients is defined else '' }}">
+              <span class="status-dot" aria-hidden="true"></span>
+              <span class="time">{{ item.time }}</span>
+              <span class="cal-item-text">{{ item.preview }}</span>
+            </div>
+          {% endfor %}
+        </div>
+      </div>
+    {% endfor %}
+  {% endfor %}
+</div>
+
+<!-- Item detail modal -->
+<div class="modal fade" id="item-modal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title d-flex align-items-center gap-2">
+          <span class="hl" id="modal-kind"></span>
+          <span id="modal-title-text"></span>
+        </h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <div class="small-meta mb-2" id="modal-meta"></div>
+        <div id="modal-content" style="white-space: pre-wrap; max-height: 50vh; overflow-y: auto;"></div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-soft" data-bs-dismiss="modal">Close</button>
+        <button type="button" class="btn btn-soft" id="modal-cancel-btn" style="color: var(--g-danger);">
+          <i class="fas fa-xmark me-1"></i> Cancel item
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const modalEl = document.getElementById('item-modal');
+const modal = new bootstrap.Modal(modalEl);
+const elKind    = document.getElementById('modal-kind');
+const elTitle   = document.getElementById('modal-title-text');
+const elMeta    = document.getElementById('modal-meta');
+const elContent = document.getElementById('modal-content');
+const elCancel  = document.getElementById('modal-cancel-btn');
+let currentItem = null;
+
+function openItem(el) {
+  const kind = el.dataset.kind;
+  currentItem = { kind, id: el.dataset.id };
+  const isEmail = kind === 'email_blast';
+
+  elKind.className = 'hl ' + (isEmail ? 'hl-warning' : 'hl-purple');
+  elKind.innerHTML = `<i class="fas ${isEmail ? 'fa-envelope' : 'fa-share-nodes'} me-1"></i>${isEmail ? 'Email' : 'Social'}`;
+  elTitle.textContent = isEmail ? (el.dataset.subject || 'Email blast') : 'Social post';
+
+  const metaBits = [el.dataset.iso, `status: ${el.dataset.status}`];
+  if (el.dataset.recipients) metaBits.push(`${el.dataset.recipients} recipient(s)`);
+  if (el.dataset.ai === '1') metaBits.push('AI generated');
+  elMeta.textContent = metaBits.join(' · ');
+
+  if (isEmail) {
+    // Sandbox the email HTML — content can be user- or AI-authored and may
+    // contain script tags. Iframe with empty sandbox blocks scripts, top-level
+    // navigation, form submission, plugins, and same-origin DOM access.
+    elContent.innerHTML = '';
+    const iframe = document.createElement('iframe');
+    iframe.setAttribute('sandbox', '');
+    iframe.srcdoc = el.dataset.content;
+    iframe.style.cssText = 'width:100%; min-height:300px; border:1px solid var(--g-border-soft); border-radius:8px; background:#fff;';
+    elContent.appendChild(iframe);
+  } else {
+    elContent.textContent = el.dataset.content;
+  }
+
+  elCancel.style.display = '';
+  modal.show();
+}
+
+document.querySelectorAll('.cal-item').forEach(el => {
+  el.addEventListener('click', () => openItem(el));
+  el.addEventListener('keydown', e => { if (e.key === 'Enter') openItem(el); });
+});
+
+/* ---------- Drag-to-reschedule ---------- */
+let dragSource = null;
+
+document.querySelectorAll('.cal-item').forEach(el => {
+  el.addEventListener('dragstart', (e) => {
+    dragSource = el;
+    el.classList.add('cal-item-dragging');
+    e.dataTransfer.effectAllowed = 'move';
+    // Some browsers require setData
+    e.dataTransfer.setData('text/plain', el.dataset.id);
+  });
+  el.addEventListener('dragend', () => {
+    el.classList.remove('cal-item-dragging');
+    document.querySelectorAll('.calendar-day.drag-over').forEach(d => d.classList.remove('drag-over'));
+    dragSource = null;
+  });
+});
+
+document.querySelectorAll('.calendar-day').forEach(cell => {
+  cell.addEventListener('dragover', (e) => {
+    if (!dragSource) return;
+    if (cell.classList.contains('past')) return;  // can't drop into past
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    cell.classList.add('drag-over');
+  });
+  cell.addEventListener('dragleave', () => cell.classList.remove('drag-over'));
+  cell.addEventListener('drop', async (e) => {
+    e.preventDefault();
+    cell.classList.remove('drag-over');
+    if (!dragSource) return;
+    if (cell.classList.contains('past')) {
+      TJ.notify.warning('Cannot drop into a past day.');
+      return;
+    }
+
+    const targetDate = cell.dataset.date;            // YYYY-MM-DD
+    const currentIso = dragSource.dataset.iso;       // "YYYY-MM-DD HH:MM UTC"
+    const currentDate = currentIso.slice(0, 10);
+    if (targetDate === currentDate) return;          // dropped on same day
+
+    const time = dragSource.dataset.time || '12:00'; // preserve original time-of-day
+    // Build UTC timestamp from target date + original UTC time
+    const iso = new Date(`${targetDate}T${time}:00Z`).toISOString();
+
+    const kind = dragSource.dataset.kind;
+    const id = dragSource.dataset.id;
+    const url = kind === 'email_blast'
+      ? `/api/email-blasts/${id}/reschedule`
+      : `/api/social/posts/${id}/reschedule`;
+
+    const data = await TJ.api.patch(url, { scheduled_at: iso },
+      { progress: true, progressLabel: 'Rescheduling…', successMsg: 'Moved' });
+    if (data) setTimeout(() => location.reload(), 400);
+  });
+});
+
+elCancel.addEventListener('click', async () => {
+  if (!currentItem) return;
+  const noun = currentItem.kind === 'email_blast' ? 'blast' : 'post';
+  const ok = await TJ.confirm(`Cancel this scheduled ${noun}? This can't be undone.`, {
+    title: `Cancel scheduled ${noun}`, okLabel: 'Yes, cancel', danger: true,
+  });
+  if (!ok) return;
+  const url = currentItem.kind === 'email_blast'
+    ? `/api/email-blasts/${currentItem.id}/cancel`
+    : `/api/social/posts/${currentItem.id}/cancel`;
+  const restore = TJ.btnLoading(elCancel, 'Cancelling…');
+  const data = await TJ.api.del(url, { successMsg: 'Cancelled' });
+  restore();
+  if (data) { modal.hide(); setTimeout(() => location.reload(), 500); }
+});
+</script>
+{% endblock %}

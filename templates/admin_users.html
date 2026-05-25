@@ -1,0 +1,321 @@
+{% extends "base.html" %}
+{% block title %}Users &middot; Admin{% endblock %}
+
+{% block page_header %}
+<div class="page-header-row">
+  <div>
+    <div class="eyebrow">Admin</div>
+    <h1>Users</h1>
+    <p class="lede">Manage roles, tiers, and access for everyone on Gootier.</p>
+  </div>
+  <div class="actions">
+    <a href="/admin/logs" class="btn btn-soft"><i class="fas fa-clock-rotate-left me-2"></i>Activity log</a>
+  </div>
+</div>
+{% endblock %}
+
+{% block content %}
+<div class="stat-grid">
+  <div class="stat-card">
+    <div class="stat-icon stat-icon-indigo"><i class="fas fa-users"></i></div>
+    <div><div class="stat-value">{{ total_users }}</div><div class="stat-label">Total users</div></div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-icon stat-icon-success"><i class="fas fa-circle-check"></i></div>
+    <div><div class="stat-value">{{ active_users }}</div><div class="stat-label">Active</div></div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-icon stat-icon-purple"><i class="fas fa-medal"></i></div>
+    <div><div class="stat-value">{{ paying_users }}</div><div class="stat-label">Paying subscribers</div></div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-icon stat-icon-warning"><i class="fas fa-hourglass-half"></i></div>
+    <div><div class="stat-value">{{ trial_users }}</div><div class="stat-label">On trial</div></div>
+  </div>
+</div>
+
+<div class="card-x mb-3">
+  <div class="card-x-body">
+    <form id="filter-form" class="row g-3 align-items-end">
+      <div class="col-md-4">
+        <label class="form-label">Search</label>
+        <input class="form-control" name="q" placeholder="Username, email or display name">
+      </div>
+      <div class="col-md-3">
+        <label class="form-label">Role</label>
+        <select class="form-select" name="role">
+          <option value="">All roles</option>
+          {% for r in roles %}<option value="{{ r }}">{{ r|capitalize }}</option>{% endfor %}
+        </select>
+      </div>
+      <div class="col-md-2">
+        <label class="form-label">Tier</label>
+        <select class="form-select" name="tier">
+          <option value="">All tiers</option>
+          {% for t in tiers %}<option value="{{ t }}">{{ t|capitalize }}</option>{% endfor %}
+        </select>
+      </div>
+      <div class="col-md-2">
+        <label class="form-label">Status</label>
+        <select class="form-select" name="status">
+          <option value="">All</option>
+          <option value="active">Active only</option>
+          <option value="disabled">Disabled only</option>
+        </select>
+      </div>
+      <div class="col-md-1">
+        <button type="submit" class="btn btn-primary w-100"><i class="fas fa-magnifying-glass"></i></button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<div class="card-x">
+  <div class="table-responsive">
+    <table class="table-x">
+      <thead>
+        <tr>
+          <th>User</th>
+          <th>Roles</th>
+          <th>Tier</th>
+          <th>Verified</th>
+          <th>Active</th>
+          <th>Joined</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody id="users-tbody">
+        <tr><td colspan="7" class="text-center text-muted py-4">Loading…</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="card-x-footer d-flex align-items-center">
+    <span class="small-meta" id="results-count">—</span>
+    <div class="ms-auto d-flex gap-2">
+      <button class="btn btn-soft btn-sm" id="prev-btn"><i class="fas fa-chevron-left"></i> Prev</button>
+      <button class="btn btn-soft btn-sm" id="next-btn">Next <i class="fas fa-chevron-right"></i></button>
+    </div>
+  </div>
+</div>
+
+<!-- Edit user modal -->
+<div class="modal fade" id="user-modal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered modal-lg">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title">
+          Edit <span id="mod-username" class="text-muted"></span>
+        </h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <form id="user-form">
+          <input type="hidden" id="mod-user-id">
+
+          <div class="row g-3">
+            <div class="col-md-6">
+              <label class="form-label">Email</label>
+              <input class="form-control" id="mod-email" disabled>
+            </div>
+            <div class="col-md-6">
+              <label class="form-label">Display name</label>
+              <input class="form-control" id="mod-nickname" disabled>
+            </div>
+          </div>
+
+          <hr class="my-4">
+
+          <div class="mb-3">
+            <label class="form-label">Roles (can hold multiple)</label>
+            <div class="d-flex flex-wrap gap-3">
+              {% for r in roles %}
+              <label class="form-check m-0">
+                <input class="form-check-input role-check" type="checkbox" value="{{ r }}">
+                <span class="form-check-label">{{ r|capitalize }}</span>
+              </label>
+              {% endfor %}
+            </div>
+          </div>
+
+          <div class="row g-3">
+            <div class="col-md-4">
+              <label class="form-label">Subscription tier</label>
+              <select class="form-select" id="mod-tier">
+                {% for t in tiers %}<option value="{{ t }}">{{ t|capitalize }}</option>{% endfor %}
+              </select>
+            </div>
+            <div class="col-md-4">
+              <label class="form-label">Subscribed until</label>
+              <input class="form-control" id="mod-subscribed-until" type="datetime-local">
+            </div>
+            <div class="col-md-4 d-flex align-items-end">
+              <div>
+                <div class="form-check form-switch">
+                  <input class="form-check-input" type="checkbox" id="mod-active">
+                  <label class="form-check-label" for="mod-active">Active</label>
+                </div>
+                <div class="form-check form-switch mt-1">
+                  <input class="form-check-input" type="checkbox" id="mod-verified">
+                  <label class="form-check-label" for="mod-verified">Email verified</label>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="card-x mt-4" style="background:#fafbfd; border:none;">
+            <div class="card-x-body py-3">
+              <div class="row text-center small">
+                <div class="col"><div class="text-muted">Connections</div><div class="fw-bold" id="mod-conn">—</div></div>
+                <div class="col"><div class="text-muted">Posts</div><div class="fw-bold" id="mod-posts">—</div></div>
+                <div class="col"><div class="text-muted">Blasts</div><div class="fw-bold" id="mod-blasts">—</div></div>
+                <div class="col"><div class="text-muted">Stripe</div><div class="fw-bold small" id="mod-stripe">—</div></div>
+              </div>
+            </div>
+          </div>
+        </form>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-soft" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" class="btn tj-grad-btn" id="save-user-btn"><i class="fas fa-floppy-disk me-1"></i> Save changes</button>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const tbody = document.getElementById('users-tbody');
+const resultsCount = document.getElementById('results-count');
+const modalEl = document.getElementById('user-modal');
+const modal = new bootstrap.Modal(modalEl);
+const ROLES = {{ roles|tojson }};
+const TIERS = {{ tiers|tojson }};
+
+let state = { q: '', role: '', tier: '', status: '', limit: 50, offset: 0, total: 0 };
+
+function tierPill(t) {
+  const map = { trial: 'hl-muted', bronze: 'hl-warning', silver: 'hl-info', gold: 'hl-purple' };
+  return `<span class="hl ${map[t] || 'hl-muted'}">${t}</span>`;
+}
+function rolePills(role) {
+  return (role || '').split(',').filter(Boolean).map(r =>
+    `<span class="hl hl-indigo me-1">${r}</span>`
+  ).join('');
+}
+function fmtDate(iso) {
+  if (!iso) return '—';
+  return new Date(iso).toISOString().slice(0, 10);
+}
+
+async function load() {
+  const params = new URLSearchParams({
+    q: state.q, role: state.role, tier: state.tier, status: state.status,
+    limit: state.limit, offset: state.offset,
+  });
+  const data = await TJ.api.get('/api/admin/users?' + params);
+  if (!data) return;
+  state.total = data.total;
+
+  if (data.users.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="7" class="text-center text-muted py-4">No users match these filters.</td></tr>';
+  } else {
+    tbody.innerHTML = data.users.map(u => `
+      <tr role="button" data-user-id="${u.id}">
+        <td>
+          <div class="d-flex align-items-center gap-2">
+            <div class="user-avatar" style="width:32px;height:32px;font-size:.8rem;">
+              ${((u.nickname || u.username || '?')[0] || '?').toUpperCase()}
+            </div>
+            <div>
+              <div class="fw-semibold">${u.nickname || u.username}</div>
+              <div class="small-meta">${u.email}</div>
+            </div>
+          </div>
+        </td>
+        <td>${rolePills(u.role) || '<span class="text-muted small">—</span>'}</td>
+        <td>${tierPill(u.tier)}</td>
+        <td>${u.is_verified ? '<i class="fas fa-check text-success"></i>' : '<i class="fas fa-circle-exclamation text-warning"></i>'}</td>
+        <td>${u.is_active ? '<span class="hl hl-success">Active</span>' : '<span class="hl hl-danger">Disabled</span>'}</td>
+        <td class="small-meta">${fmtDate(u.created_at)}</td>
+        <td class="text-end"><i class="fas fa-chevron-right text-muted small"></i></td>
+      </tr>
+    `).join('');
+  }
+
+  const from = data.users.length ? state.offset + 1 : 0;
+  const to = state.offset + data.users.length;
+  resultsCount.textContent = `Showing ${from}-${to} of ${state.total}`;
+
+  tbody.querySelectorAll('tr[data-user-id]').forEach(tr => {
+    tr.addEventListener('click', () => openEditor(parseInt(tr.dataset.userId, 10)));
+  });
+}
+
+async function openEditor(userId) {
+  const data = await TJ.api.get(`/api/admin/users/${userId}`);
+  if (!data) return;
+
+  document.getElementById('mod-username').textContent = '@' + data.username;
+  document.getElementById('mod-user-id').value = data.id;
+  document.getElementById('mod-email').value = data.email;
+  document.getElementById('mod-nickname').value = data.nickname || '';
+  document.getElementById('mod-tier').value = data.tier;
+  document.getElementById('mod-active').checked = !!data.is_active;
+  document.getElementById('mod-verified').checked = !!data.is_verified;
+  document.getElementById('mod-subscribed-until').value = data.subscribed_until
+    ? data.subscribed_until.slice(0, 16) : '';
+
+  const userRoles = (data.role || '').split(',').filter(Boolean);
+  document.querySelectorAll('.role-check').forEach(cb => {
+    cb.checked = userRoles.includes(cb.value);
+  });
+
+  document.getElementById('mod-conn').textContent = data.counts.connections;
+  document.getElementById('mod-posts').textContent = data.counts.posts;
+  document.getElementById('mod-blasts').textContent = data.counts.blasts;
+  document.getElementById('mod-stripe').textContent = data.stripe_customer_id || '—';
+
+  modal.show();
+}
+
+document.getElementById('save-user-btn').addEventListener('click', async () => {
+  const id = document.getElementById('mod-user-id').value;
+  const roles = [...document.querySelectorAll('.role-check:checked')].map(cb => cb.value);
+  const subUntil = document.getElementById('mod-subscribed-until').value;
+  const payload = {
+    role: roles.join(','),
+    tier: document.getElementById('mod-tier').value,
+    is_active: document.getElementById('mod-active').checked,
+    is_verified: document.getElementById('mod-verified').checked,
+    subscribed_until: subUntil ? new Date(subUntil).toISOString() : null,
+  };
+  const btn = document.getElementById('save-user-btn');
+  const restore = TJ.btnLoading(btn, 'Saving…');
+  const data = await TJ.api.patch(`/api/admin/users/${id}`, payload,
+    { progress: true, progressLabel: 'Updating user…', successMsg: 'User updated' });
+  restore();
+  if (data) { modal.hide(); load(); }
+});
+
+document.getElementById('filter-form').addEventListener('submit', (e) => {
+  e.preventDefault();
+  const form = e.target;
+  state.q = form.q.value;
+  state.role = form.role.value;
+  state.tier = form.tier.value;
+  state.status = form.status.value;
+  state.offset = 0;
+  load();
+});
+
+document.getElementById('prev-btn').addEventListener('click', () => {
+  if (state.offset >= state.limit) { state.offset -= state.limit; load(); }
+});
+document.getElementById('next-btn').addEventListener('click', () => {
+  if (state.offset + state.limit < state.total) { state.offset += state.limit; load(); }
+});
+
+load();
+</script>
+{% endblock %}

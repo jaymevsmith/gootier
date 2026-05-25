@@ -1,0 +1,206 @@
+{% extends "base.html" %}
+{% block title %}Env &amp; Keys &middot; Admin{% endblock %}
+
+{% block page_header %}
+<div class="page-header-row">
+  <div>
+    <div class="eyebrow">Admin</div>
+    <h1>Env &amp; Keys</h1>
+    <p class="lede">Runtime configuration &mdash; API keys, SMTP, OAuth credentials. Changes take effect on the next request, no restart needed.</p>
+  </div>
+  <div class="actions">
+    <a href="/admin/users" class="btn btn-soft"><i class="fas fa-users me-2"></i>Users</a>
+    <a href="/admin/logs" class="btn btn-soft"><i class="fas fa-clock-rotate-left me-2"></i>Activity</a>
+  </div>
+</div>
+{% endblock %}
+
+{% block content %}
+<div class="alert alert-warning d-flex align-items-start gap-2">
+  <i class="fas fa-shield-halved mt-1"></i>
+  <div>
+    <strong>Care here.</strong> These values back Stripe, Facebook OAuth, your AI generator, and outbound email.
+    Secret fields are masked on display; type a new value and save to rotate, or clear to fall back to <code>os.environ</code>.
+    Locked keys (DATABASE_URL, SECRET_KEY) can only change via deploy.
+  </div>
+</div>
+
+<div id="env-groups"><div class="text-center text-muted py-5">Loading…</div></div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const groupsEl = document.getElementById('env-groups');
+
+const GROUP_META = {
+  core:    { title: 'Core',    icon: 'fa-server',          tint: 'hl-indigo' },
+  email:   { title: 'Email',   icon: 'fa-envelope',         tint: 'hl-warning' },
+  ai:      { title: 'AI',      icon: 'fa-wand-magic-sparkles', tint: 'hl-purple' },
+  billing: { title: 'Billing', icon: 'fa-credit-card',     tint: 'hl-success' },
+  social:  { title: 'Social',  icon: 'fa-share-nodes',     tint: 'hl-info' },
+};
+
+function sourceBadge(item) {
+  if (item.is_locked) return '<span class="hl hl-muted">Locked</span>';
+  if (item.source === 'db')    return '<span class="hl hl-indigo">DB</span>';
+  if (item.source === 'env')   return '<span class="hl hl-muted">.env</span>';
+  return '<span class="hl hl-warning">Unset</span>';
+}
+
+function renderRow(item) {
+  const placeholder = item.is_secret
+    ? (item.has_value ? '••••••••' : 'not set')
+    : (item.display_value || 'not set');
+  return `
+    <div class="env-row" data-key="${item.key}">
+      <div class="env-row-head">
+        <div>
+          <div class="env-key">${item.key}</div>
+          <div class="env-desc">${item.description || ''}</div>
+        </div>
+        <div class="d-flex align-items-center gap-2">
+          ${sourceBadge(item)}
+          ${item.is_locked ? '' : `
+            <button class="btn btn-soft btn-sm env-edit-btn">
+              <i class="fas fa-pen-to-square me-1"></i>${item.has_value ? 'Edit' : 'Set'}
+            </button>`}
+        </div>
+      </div>
+      <div class="env-value">
+        <code>${placeholder}</code>
+      </div>
+      <div class="env-editor d-none">
+        <div class="d-flex gap-2 align-items-center">
+          <input type="${item.is_secret ? 'password' : 'text'}" class="form-control env-input"
+                 placeholder="${item.is_secret ? 'Paste new value (blank to keep current)' : 'New value'}"
+                 ${item.is_secret ? '' : `value="${item.display_value || ''}"`}>
+          <button class="btn btn-primary btn-sm env-save-btn">Save</button>
+          <button class="btn btn-soft btn-sm env-cancel-btn">Cancel</button>
+          ${item.has_value ? '<button class="btn btn-sm env-clear-btn" style="color: var(--g-danger);">Clear</button>' : ''}
+        </div>
+        ${item.is_secret ? '<div class="form-text">Leave blank to keep the current secret unchanged. Use "Clear" to fall back to <code>os.environ</code>.</div>' : ''}
+      </div>
+      ${item.updated_by_name ? `<div class="env-meta">Last updated by @${item.updated_by_name}${item.updated_at ? ' on ' + new Date(item.updated_at).toLocaleString() : ''}</div>` : ''}
+    </div>
+  `;
+}
+
+async function load() {
+  const data = await TJ.api.get('/api/admin/env');
+  if (!data) return;
+
+  const byGroup = {};
+  data.items.forEach(it => { (byGroup[it.group] ||= []).push(it); });
+
+  groupsEl.innerHTML = Object.keys(byGroup).map(g => {
+    const meta = GROUP_META[g] || { title: g, icon: 'fa-folder', tint: 'hl-muted' };
+    return `
+      <div class="card-x mb-4">
+        <div class="card-x-header">
+          <h6><i class="fas ${meta.icon} me-2 text-muted"></i>${meta.title}
+            <span class="hl ${meta.tint} ms-2">${byGroup[g].length}</span>
+          </h6>
+        </div>
+        <div class="card-x-body p-0">
+          ${byGroup[g].map(renderRow).join('')}
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  wireRows();
+}
+
+function wireRows() {
+  document.querySelectorAll('.env-row').forEach(row => {
+    const editBtn = row.querySelector('.env-edit-btn');
+    const editor = row.querySelector('.env-editor');
+    const valueDisplay = row.querySelector('.env-value');
+    const input = row.querySelector('.env-input');
+    const saveBtn = row.querySelector('.env-save-btn');
+    const cancelBtn = row.querySelector('.env-cancel-btn');
+    const clearBtn = row.querySelector('.env-clear-btn');
+
+    editBtn?.addEventListener('click', () => {
+      editor.classList.remove('d-none');
+      valueDisplay.classList.add('d-none');
+      input.focus();
+    });
+    cancelBtn?.addEventListener('click', () => {
+      editor.classList.add('d-none');
+      valueDisplay.classList.remove('d-none');
+      input.value = input.dataset.original || input.value;
+    });
+
+    saveBtn?.addEventListener('click', async () => {
+      const key = row.dataset.key;
+      const val = input.value.trim();
+      if (!val) {
+        TJ.notify.warning('Nothing to save — type a new value or use Clear.');
+        return;
+      }
+      const restore = TJ.btnLoading(saveBtn, 'Saving…');
+      const data = await TJ.api.patch(`/api/admin/env/${encodeURIComponent(key)}`,
+        { value: val },
+        { progress: true, successMsg: `${key} updated` });
+      restore();
+      if (data) load();
+    });
+
+    clearBtn?.addEventListener('click', async () => {
+      const key = row.dataset.key;
+      const ok = await TJ.confirm(`Clear ${key}? It'll fall back to whatever's in os.environ (which may be unset).`,
+        { title: `Clear ${key}`, okLabel: 'Clear', danger: true });
+      if (!ok) return;
+      const restore = TJ.btnLoading(clearBtn, 'Clearing…');
+      const data = await TJ.api.patch(`/api/admin/env/${encodeURIComponent(key)}`,
+        { value: null },
+        { progress: true, successMsg: `${key} cleared` });
+      restore();
+      if (data) load();
+    });
+  });
+}
+
+load();
+</script>
+
+<style>
+.env-row {
+  padding: 1rem 1.25rem;
+  border-bottom: 1px solid var(--g-border-soft);
+}
+.env-row:last-child { border-bottom: none; }
+.env-row-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 1rem;
+  margin-bottom: .35rem;
+}
+.env-key {
+  font-family: var(--bs-font-monospace);
+  font-weight: 600;
+  font-size: .92rem;
+}
+.env-desc {
+  color: var(--g-text-2);
+  font-size: .85rem;
+  margin-top: .1rem;
+}
+.env-value code {
+  font-size: .82rem;
+  color: var(--g-text-3);
+  background: transparent;
+  padding: 0;
+}
+.env-editor {
+  margin-top: .5rem;
+}
+.env-meta {
+  margin-top: .35rem;
+  font-size: .72rem;
+  color: var(--g-text-3);
+}
+</style>
+{% endblock %}

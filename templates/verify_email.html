@@ -1,0 +1,32 @@
+{% extends "auth_base.html" %}
+{% block title %}Verify email &middot; Gootier{% endblock %}
+
+{% block hero_title %}Two seconds away.{% endblock %}
+{% block hero_lede %}Confirm your email so we can keep your campaigns flowing, recover your account if needed, and reach you when something needs your attention.{% endblock %}
+
+{% block content %}
+  {% if done %}
+    <h3>Email confirmed</h3>
+    <p class="sub">{{ email or 'Your address' }} is now verified. You're all set.</p>
+    <a href="/dashboard" class="btn tj-grad-btn w-100">Go to dashboard</a>
+  {% elif not token %}
+    <h3>Link no longer valid</h3>
+    <p class="sub">{{ error or 'This verification link is invalid or has expired.' }}</p>
+    <p class="text-center small text-muted mt-3">
+      Sign in and head to your profile page to request a fresh link.
+    </p>
+    <a href="/login" class="btn tj-grad-btn w-100 mt-2">Sign in</a>
+  {% else %}
+    <h3>Confirm your email</h3>
+    <p class="sub">Click the button below to confirm <strong>{{ email }}</strong>.</p>
+
+    <form method="post" action="/verify-email">
+      <input type="hidden" name="token" value="{{ token }}">
+      <button type="submit" class="btn tj-grad-btn w-100">Confirm email</button>
+    </form>
+
+    <p class="text-center mt-4 mb-0 small text-muted">
+      Wrong account? <a href="/login">Sign in to another</a>
+    </p>
+  {% endif %}
+{% endblock %}

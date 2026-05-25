@@ -1,0 +1,117 @@
+{% extends "base.html" %}
+{% block title %}Activity log &middot; Admin{% endblock %}
+
+{% block page_header %}
+<div class="page-header-row">
+  <div>
+    <div class="eyebrow">Admin</div>
+    <h1>Activity log</h1>
+    <p class="lede">Every meaningful change on the platform, freshest first.</p>
+  </div>
+  <div class="actions">
+    <a href="/admin/users" class="btn btn-soft"><i class="fas fa-users me-2"></i>Users</a>
+  </div>
+</div>
+{% endblock %}
+
+{% block content %}
+<div class="card-x mb-3">
+  <div class="card-x-body">
+    <form id="log-filter-form" class="row g-3 align-items-end">
+      <div class="col-md-4">
+        <label class="form-label">Action contains</label>
+        <input class="form-control" name="action" placeholder="e.g. ADMIN_UPDATE, LOGIN, AI_GENERATE">
+      </div>
+      <div class="col-md-3">
+        <label class="form-label">User ID</label>
+        <input class="form-control" name="user_id" type="number" min="1" placeholder="optional">
+      </div>
+      <div class="col-md-3">
+        <label class="form-label">Limit</label>
+        <select class="form-select" name="limit">
+          <option>50</option>
+          <option selected>100</option>
+          <option>250</option>
+          <option>500</option>
+        </select>
+      </div>
+      <div class="col-md-2">
+        <button type="submit" class="btn btn-primary w-100"><i class="fas fa-rotate me-1"></i>Refresh</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<div class="card-x">
+  <div class="table-responsive">
+    <table class="table-x">
+      <thead>
+        <tr>
+          <th>When</th>
+          <th>User</th>
+          <th>Action</th>
+          <th>Entity</th>
+          <th>Detail</th>
+        </tr>
+      </thead>
+      <tbody id="logs-tbody">
+        <tr><td colspan="5" class="text-center text-muted py-4">Loading…</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const tbody = document.getElementById('logs-tbody');
+
+function pillForAction(a) {
+  if (!a) return '';
+  if (a.startsWith('ADMIN_')) return 'hl-danger';
+  if (a.includes('LOGIN') || a.includes('SIGNUP')) return 'hl-info';
+  if (a.includes('PASSWORD') || a.includes('VERIFY') || a.includes('EMAIL')) return 'hl-warning';
+  if (a.startsWith('CREATE') || a === 'AI_GENERATE') return 'hl-purple';
+  if (a.startsWith('DELETE') || a === 'CANCEL') return 'hl-muted';
+  if (a.startsWith('UPDATE') || a === 'SUBSCRIBE') return 'hl-success';
+  return 'hl-indigo';
+}
+
+function fmt(iso) {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  return d.toLocaleString();
+}
+
+async function load() {
+  const form = document.getElementById('log-filter-form');
+  const params = new URLSearchParams();
+  if (form.action.value) params.set('action', form.action.value);
+  if (form.user_id.value) params.set('user_id', form.user_id.value);
+  params.set('limit', form.limit.value);
+
+  const data = await TJ.api.get('/api/admin/logs?' + params);
+  if (!data) return;
+  if (data.logs.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="5" class="text-center text-muted py-4">No activity matches these filters.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = data.logs.map(r => `
+    <tr>
+      <td class="small-meta font-monospace" style="white-space:nowrap;">${fmt(r.created_at)}</td>
+      <td>${r.user_name ? '@' + r.user_name : '<span class="text-muted">system</span>'}</td>
+      <td><span class="hl ${pillForAction(r.action)}">${r.action}</span></td>
+      <td>${r.entity_type ? `${r.entity_type}${r.entity_id ? ' #' + r.entity_id : ''}` : '<span class="text-muted">—</span>'}</td>
+      <td class="small">${(r.detail || '').replace(/</g, '&lt;')}</td>
+    </tr>
+  `).join('');
+}
+
+document.getElementById('log-filter-form').addEventListener('submit', (e) => {
+  e.preventDefault();
+  load();
+});
+
+load();
+</script>
+{% endblock %}

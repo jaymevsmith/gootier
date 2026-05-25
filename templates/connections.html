@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+{% block title %}Connections &middot; Gootier{% endblock %}
+
+{% block page_header %}
+<div class="page-header-row">
+  <div>
+    <div class="eyebrow">Channels</div>
+    <h1>Connected accounts</h1>
+    <p class="lede">Grant Gootier permission to post to your social channels via OAuth.</p>
+  </div>
+  <div class="actions">
+    <a href="/oauth/facebook/start" class="btn tj-grad-btn"><i class="fab fa-facebook me-2"></i>Connect Facebook</a>
+  </div>
+</div>
+{% endblock %}
+
+{% block content %}
+{% if connections %}
+<div class="card-x">
+  <table class="table-x">
+    <thead>
+      <tr>
+        <th>Platform</th>
+        <th>Account</th>
+        <th>Page ID</th>
+        <th>Connected</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for c in connections %}
+      <tr>
+        <td>
+          <span class="hl hl-info">
+            {% if c.platform == 'facebook' %}<i class="fab fa-facebook me-1"></i>{% endif %}
+            {{ c.platform }}
+          </span>
+        </td>
+        <td>{{ c.account_name }}</td>
+        <td class="small-meta font-monospace">{{ c.page_id or '—' }}</td>
+        <td class="small-meta">{{ c.created_at.strftime('%Y-%m-%d') }}</td>
+        <td class="text-end">
+          <button class="btn btn-soft btn-sm" data-disconnect="{{ c.id }}">
+            <i class="fas fa-plug-circle-xmark me-1"></i> Disconnect
+          </button>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<div class="empty-state">
+  <div class="empty-icon"><i class="fas fa-link"></i></div>
+  <h5>No connections yet</h5>
+  <p>Click "Connect Facebook" to grant Gootier permission to post to your Pages. We'll handle the OAuth flow for you.</p>
+  <a href="/oauth/facebook/start" class="btn tj-grad-btn"><i class="fab fa-facebook me-2"></i>Connect Facebook</a>
+</div>
+
+<div class="mt-5">
+  <h6 class="text-muted small text-uppercase">Coming soon</h6>
+  <div class="row g-3 mt-1">
+    {% for p in [('instagram','Instagram','#E1306C'), ('x-twitter','X','#000000'), ('linkedin','LinkedIn','#0A66C2'), ('tiktok','TikTok','#000000')] %}
+    <div class="col-md-3 col-sm-6">
+      <div class="card-x" style="opacity:.7;">
+        <div class="card-x-body text-center">
+          <i class="fab fa-{{ p[0] }} fa-2x mb-2" style="color: {{ p[2] }};"></i>
+          <div class="fw-semibold">{{ p[1] }}</div>
+          <div class="small-meta">Coming soon</div>
+        </div>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.querySelectorAll('[data-disconnect]').forEach(btn => {
+  btn.addEventListener('click', async () => {
+    const ok = await TJ.confirm('Disconnect this account? Future scheduled posts on this page will fail.', {
+      title: 'Disconnect account', okLabel: 'Disconnect', danger: true,
+    });
+    if (!ok) return;
+    const id = btn.dataset.disconnect;
+    const restore = TJ.btnLoading(btn, 'Disconnecting…');
+    const data = await TJ.api.del(`/api/social/connections/${id}`, { successMsg: 'Disconnected' });
+    restore();
+    if (data) location.reload();
+  });
+});
+</script>
+{% endblock %}

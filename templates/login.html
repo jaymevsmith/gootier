@@ -1,0 +1,31 @@
+{% extends "auth_base.html" %}
+{% block title %}Sign in &middot; Gootier{% endblock %}
+
+{% block hero_title %}Welcome back &mdash; let's ship some campaigns.{% endblock %}
+{% block hero_lede %}Pick up where you left off. Your scheduled posts and AI drafts are right where you left them.{% endblock %}
+
+{% block content %}
+  <h3>Sign in</h3>
+  <p class="sub">Use your username or email to continue.</p>
+
+  {% if error %}<div class="alert alert-danger py-2">{{ error }}</div>{% endif %}
+
+  <form method="post" action="/login">
+    <div class="mb-3">
+      <label class="form-label">Username or email</label>
+      <input class="form-control" name="username" required autofocus>
+    </div>
+    <div class="mb-4">
+      <div class="d-flex align-items-center">
+        <label class="form-label mb-0">Password</label>
+        <a href="/forgot-password" class="ms-auto small">Forgot password?</a>
+      </div>
+      <input type="password" class="form-control mt-1" name="password" required>
+    </div>
+    <button type="submit" class="btn tj-grad-btn w-100">Sign in</button>
+  </form>
+
+  <p class="text-center mt-4 mb-0 text-muted">
+    New to Gootier? <a href="/signup">Create your account</a>
+  </p>
+{% endblock %}
