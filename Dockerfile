@@ -44,9 +44,12 @@ USER gootier
 
 EXPOSE 8000
 
+# Healthcheck hits the dynamic $PORT (Railway injects it; default 8000 locally)
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-  CMD python -c "import urllib.request,sys; \
-                 sys.exit(0) if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).status == 200 else sys.exit(1)" \
+  CMD python -c "import os,urllib.request,sys; \
+                 sys.exit(0) if urllib.request.urlopen(f'http://127.0.0.1:{os.environ.get(\"PORT\",\"8000\")}/health', timeout=3).status == 200 else sys.exit(1)" \
   || exit 1
 
-CMD ["gunicorn", "-k", "uvicorn.workers.UvicornWorker", "-w", "2", "-t", "120", "-b", "0.0.0.0:8000", "main:app"]
+# Shell-form CMD so ${PORT} expands at container start. Railway sets PORT
+# automatically; locally `docker run` without -e PORT falls back to 8000.
+CMD ["sh", "-c", "gunicorn -k uvicorn.workers.UvicornWorker -w 2 -t 120 -b 0.0.0.0:${PORT:-8000} main:app"]

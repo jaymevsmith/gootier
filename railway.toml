@@ -1,0 +1,17 @@
+# Railway deploy config.
+#
+# Tells Railway to use our Dockerfile (which is pinned to linux/amd64 and
+# binds to $PORT) and where to find the healthcheck. All other config —
+# SECRET_KEY, DATABASE_URL, APP_URL, API keys — goes in the Railway
+# dashboard env vars or is provisioned by the Postgres plugin.
+
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+startCommand = "gunicorn -k uvicorn.workers.UvicornWorker -w 2 -t 120 -b 0.0.0.0:$PORT main:app"
+healthcheckPath = "/health"
+healthcheckTimeout = 30
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 5
