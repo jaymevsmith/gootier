@@ -1,0 +1,45 @@
+# Source control + local dev artifacts
+.git
+.gitignore
+.gitattributes
+
+# Python build artifacts
+__pycache__
+*.py[cod]
+*.egg-info
+.pytest_cache
+.coverage
+.mypy_cache
+.ruff_cache
+
+# Local virtualenvs
+.venv
+venv
+env
+
+# Local dev databases & secrets — never bake into the image
+*.db
+*.sqlite
+*.sqlite3
+.env
+.env.*
+!.env.example
+
+# Editor / OS noise
+.DS_Store
+.idea
+.vscode
+*.swp
+
+# Build outputs / logs
+dist
+build
+*.log
+
+# Docker meta (don't bake the Dockerfile into the layer)
+Dockerfile
+.dockerignore
+
+# Optional: keep README in the image so `docker run ... --entrypoint cat /app/README.md` works
+# (commented out — leave it in)
+# README.md
