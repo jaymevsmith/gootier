@@ -10,7 +10,10 @@ builder = "DOCKERFILE"
 dockerfilePath = "Dockerfile"
 
 [deploy]
-startCommand = "gunicorn -k uvicorn.workers.UvicornWorker -w 2 -t 120 -b 0.0.0.0:$PORT main:app"
+# No startCommand here on purpose — Railway runs the Dockerfile's CMD which
+# is shell-form (`sh -c "gunicorn … -b 0.0.0.0:${PORT:-8000} main:app"`) so
+# ${PORT} actually expands. Setting startCommand here would override the
+# Dockerfile and Railway's startCommand expansion isn't reliable.
 healthcheckPath = "/health"
 healthcheckTimeout = 30
 restartPolicyType = "ON_FAILURE"
