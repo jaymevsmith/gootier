@@ -26,7 +26,78 @@
   <div class="alert alert-success">Subscription updated — thanks!</div>
 {% elif request.query_params.get('cancelled') %}
   <div class="alert alert-secondary">Checkout cancelled. No charge was made.</div>
+{% elif request.query_params.get('credits_added') %}
+  <div class="alert alert-success">Credits added to your balance.</div>
+{% elif request.query_params.get('credits_cancelled') %}
+  <div class="alert alert-secondary">Credit purchase cancelled. No charge was made.</div>
 {% endif %}
+
+<div class="card-x mb-4">
+  <div class="card-x-header">
+    <h6><i class="fas fa-coins me-2 text-muted"></i>Credit balance</h6>
+    <span class="ms-auto small text-muted">Used for image &amp; video generation</span>
+  </div>
+  <div class="card-x-body">
+    <div class="row align-items-center">
+      <div class="col-md-4">
+        <div class="display-5 fw-bold">{{ credit_balance|default(0) }}</div>
+        <div class="small-meta">credits available · refreshed monthly with your {{ user.tier }} plan</div>
+      </div>
+      <div class="col-md-8">
+        <div class="row g-3">
+          {% for pack in topup_packs %}
+          <div class="col-md-4">
+            <div class="card-x h-100" style="background:#fafbfd;">
+              <div class="card-x-body text-center">
+                <div class="fw-bold" style="font-size:1.5rem;">{{ pack.credits }}</div>
+                <div class="small-meta mb-2">credits</div>
+                <div class="mb-3">${{ '%.2f'|format(pack.price_cents / 100) }}</div>
+                <button class="btn btn-soft btn-sm w-100" data-buy-pack="{{ pack.key }}"
+                        {% if not stripe_configured %}disabled title="Stripe not configured"{% endif %}>
+                  <i class="fas fa-cart-plus me-1"></i> Buy
+                </button>
+              </div>
+            </div>
+          </div>
+          {% endfor %}
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+{% if credit_history %}
+<div class="card-x mb-4">
+  <div class="card-x-header">
+    <h6><i class="fas fa-clock-rotate-left me-2 text-muted"></i>Recent credit activity</h6>
+  </div>
+  <div class="table-responsive">
+    <table class="table-x">
+      <thead>
+        <tr><th>When</th><th>Change</th><th>Reason</th><th>Detail</th></tr>
+      </thead>
+      <tbody>
+        {% for r in credit_history %}
+        <tr>
+          <td class="small-meta font-monospace" style="white-space:nowrap;">{{ r.created_at[:16].replace('T',' ') if r.created_at else '—' }}</td>
+          <td>
+            {% if r.delta > 0 %}
+              <span class="hl hl-success">+{{ r.delta }}</span>
+            {% else %}
+              <span class="hl hl-danger">{{ r.delta }}</span>
+            {% endif %}
+          </td>
+          <td><span class="hl hl-muted">{{ r.reason }}</span></td>
+          <td class="small">{{ r.detail or '' }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+
+<h4 class="mt-5 mb-3">Subscription plans</h4>
 
 {% if not stripe_configured %}
   <div class="alert alert-warning">
@@ -86,6 +157,17 @@ document.getElementById('manage-btn')?.addEventListener('click', async () => {
   const data = await TJ.api.post('/api/billing/portal', {});
   restore();
   if (data && data.url) window.location.href = data.url;
+});
+
+document.querySelectorAll('[data-buy-pack]').forEach(btn => {
+  btn.addEventListener('click', async () => {
+    const pack_key = btn.dataset.buyPack;
+    const restore = TJ.btnLoading(btn, 'Opening checkout…');
+    const data = await TJ.api.post('/api/billing/credits/checkout', { pack_key },
+      { progress: true, progressLabel: 'Creating checkout…' });
+    restore();
+    if (data && data.url) window.location.href = data.url;
+  });
 });
 </script>
 {% endblock %}
