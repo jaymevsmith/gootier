@@ -493,20 +493,41 @@ def _seed_role_configs(db) -> None:
 
 
 def init_db() -> None:
-    Base.metadata.create_all(bind=engine)
-    with engine.begin() as conn:
-        _upgrade_users(conn)
-        _upgrade_social_connections(conn)
-        _upgrade_media(conn)
-    from database import SessionLocal
-    db = SessionLocal()
-    try:
-        _seed_tier_configs(db)
-        _seed_role_configs(db)
-        _seed_env_configs(db)
-        _encrypt_existing_tokens(db)
-    finally:
-        db.close()
+    """Migrations + seeds. Race-safe across multiple gunicorn workers via a
+    Postgres advisory lock — without it, two workers both run ALTER TABLE
+    ADD COLUMN and the loser crashes. SQLite is single-process so the lock
+    is a no-op there.
+    """
+    is_postgres = engine.dialect.name == "postgresql"
+    LOCK_ID = 4242  # arbitrary app-wide constant
+
+    def _do_init():
+        Base.metadata.create_all(bind=engine)
+        with engine.begin() as conn:
+            _upgrade_users(conn)
+            _upgrade_social_connections(conn)
+            _upgrade_media(conn)
+        from database import SessionLocal
+        db = SessionLocal()
+        try:
+            _seed_tier_configs(db)
+            _seed_role_configs(db)
+            _seed_env_configs(db)
+            _encrypt_existing_tokens(db)
+        finally:
+            db.close()
+
+    if is_postgres:
+        # pg_advisory_lock blocks until acquired; the second worker waits for
+        # the first to finish, then runs through everything as no-ops.
+        with engine.begin() as conn:
+            conn.execute(text(f"SELECT pg_advisory_lock({LOCK_ID})"))
+            try:
+                _do_init()
+            finally:
+                conn.execute(text(f"SELECT pg_advisory_unlock({LOCK_ID})"))
+    else:
+        _do_init()
 
 
 def _encrypt_existing_tokens(db) -> None:
