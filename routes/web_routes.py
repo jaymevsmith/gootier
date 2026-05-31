@@ -142,6 +142,32 @@ async def scheduled_page(
     ))
 
 
+@router.get("/calendar/{token}.ics")
+async def calendar_feed(token: str, db: Session = Depends(get_db)):
+    """Per-user iCalendar feed. Token in the URL path is the only auth —
+    pick it from /calendar's Subscribe panel. Returns text/calendar so
+    Google Calendar, Outlook, and Apple Calendar can subscribe directly."""
+    from fastapi import Response, HTTPException
+    from services.env_config import get_env
+    from services.icalendar import build_ics
+    user = db.query(User).filter(
+        User.calendar_token == token, User.is_active == True,  # noqa: E712
+    ).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="Calendar not found")
+    app_url = (get_env("APP_URL", "") or "https://gootier.jhomeautomation.com").rstrip("/")
+    ics = build_ics(db, user, app_url)
+    return Response(
+        content=ics,
+        media_type="text/calendar; charset=utf-8",
+        headers={
+            "Content-Disposition": 'inline; filename="gootier.ics"',
+            # Short cache so clients pick up new items reasonably fast.
+            "Cache-Control": "public, max-age=300",
+        },
+    )
+
+
 @router.get("/blasts")
 async def blasts_page(
     request: Request,
@@ -170,6 +196,15 @@ async def profile_page(
     return templates.TemplateResponse(request, "profile.html", _ctx(
         user, connections_count=connections_count,
     ))
+
+
+def _ensure_calendar_token(db: Session, user: User) -> str:
+    """Lazy-mint the per-user calendar token on first access."""
+    if not user.calendar_token:
+        import secrets as _py_secrets
+        user.calendar_token = _py_secrets.token_urlsafe(24)
+        db.commit()
+    return user.calendar_token
 
 
 @router.get("/calendar")
@@ -243,6 +278,15 @@ async def calendar_page(
     for d in items_by_date:
         items_by_date[d].sort(key=lambda x: x["time"])
 
+    # Subscribe-to-calendar — generate the per-user iCal URL so Google /
+    # Outlook / Apple Calendar can poll the feed and one-way mirror what's
+    # scheduled in Gootier.
+    from services.env_config import get_env
+    token = _ensure_calendar_token(db, user)
+    app_url = (get_env("APP_URL", "") or f"{request.url.scheme}://{request.url.netloc}").rstrip("/")
+    https_ics = f"{app_url}/calendar/{token}.ics"
+    webcal_ics = https_ics.replace("https://", "webcal://").replace("http://", "webcal://")
+
     return templates.TemplateResponse(request, "calendar.html", _ctx(
         user,
         anchor=anchor,
@@ -253,4 +297,6 @@ async def calendar_page(
         next_anchor=next_anchor.strftime("%Y-%m"),
         month_label=anchor.strftime("%B %Y"),
         total_items=sum(len(v) for v in items_by_date.values()),
+        ics_url=https_ics,
+        webcal_url=webcal_ics,
     ))

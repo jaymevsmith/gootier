@@ -324,6 +324,26 @@ async def cancel_post(
 
 # ------------------------------ Email blasts ------------------------------ #
 
+@router.post("/calendar/token/regenerate")
+async def regenerate_calendar_token(
+    request: Request,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Rotate the calendar subscription token — old URL stops working."""
+    import secrets as _py_secrets
+    from services.env_config import get_env
+    user.calendar_token = _py_secrets.token_urlsafe(24)
+    db.commit()
+    log_action(db, user, "CALENDAR_TOKEN_ROTATE", "User", str(user.id))
+    base = (get_env("APP_URL", "") or f"{request.url.scheme}://{request.url.netloc}").rstrip("/")
+    return {
+        "ok": True,
+        "ics_url":   f"{base}/calendar/{user.calendar_token}.ics",
+        "webcal_url": f"{base.replace('https://', 'webcal://').replace('http://', 'webcal://')}/calendar/{user.calendar_token}.ics",
+    }
+
+
 @router.post("/analytics/refresh/{post_id}")
 async def refresh_analytics(
     post_id: int,

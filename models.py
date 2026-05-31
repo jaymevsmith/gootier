@@ -46,6 +46,7 @@ class User(Base):
     reset_token_expires_at = Column(DateTime, nullable=True)
     verify_token = Column(String, nullable=True, index=True)
     verify_token_expires_at = Column(DateTime, nullable=True)
+    calendar_token = Column(String, nullable=True, index=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
     permissions: dict = {}
@@ -390,6 +391,7 @@ def _upgrade_users(conn):
     _safe_add_column(conn, "users", "reset_token_expires_at",    "TIMESTAMP")
     _safe_add_column(conn, "users", "verify_token",              "VARCHAR")
     _safe_add_column(conn, "users", "verify_token_expires_at",   "TIMESTAMP")
+    _safe_add_column(conn, "users", "calendar_token",            "VARCHAR")
 
 
 def _upgrade_social_connections(conn):

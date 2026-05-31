@@ -9,8 +9,81 @@
     <p class="lede">A bird's-eye view of every scheduled post and blast.</p>
   </div>
   <div class="actions">
+    <button type="button" class="btn btn-soft" data-bs-toggle="modal" data-bs-target="#subscribe-modal">
+      <i class="fas fa-calendar-plus me-2"></i>Subscribe
+    </button>
     <a href="/scheduled" class="btn btn-soft"><i class="fas fa-list me-2"></i>List view</a>
     <a href="/ai-builder" class="btn tj-grad-btn"><i class="fas fa-wand-magic-sparkles me-2"></i>AI campaign</a>
+  </div>
+</div>
+
+<!-- Subscribe-to-calendar modal: pushes everything scheduled here into the
+     user's Google Calendar / Outlook / Apple Calendar via a standard iCal
+     subscription feed. One-way; we never read from the destination. -->
+<div class="modal fade" id="subscribe-modal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered modal-lg">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title"><i class="fas fa-calendar-plus me-2 text-muted"></i>Add Gootier to your calendar</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <p class="text-muted">
+          Your scheduled posts and blasts will show up in your usual calendar &mdash; Google, Outlook, or Apple.
+          New items appear within a few minutes to a few hours depending on the provider's poll cadence.
+          One-way only: edits in your calendar app don't push back to Gootier.
+        </p>
+
+        <div class="row g-3 my-2">
+          <div class="col-md-4">
+            <a class="btn btn-soft w-100"
+               href="https://calendar.google.com/calendar/u/0/r?cid={{ ics_url|urlencode }}"
+               target="_blank" rel="noopener">
+              <i class="fab fa-google me-2"></i>Add to Google
+            </a>
+          </div>
+          <div class="col-md-4">
+            <a class="btn btn-soft w-100"
+               href="https://outlook.live.com/calendar/0/addfromweb?url={{ ics_url|urlencode }}&name={{ 'Gootier campaigns'|urlencode }}"
+               target="_blank" rel="noopener">
+              <i class="fab fa-microsoft me-2"></i>Add to Outlook
+            </a>
+          </div>
+          <div class="col-md-4">
+            <a class="btn btn-soft w-100" href="{{ webcal_url }}">
+              <i class="fab fa-apple me-2"></i>Add to Apple
+            </a>
+          </div>
+        </div>
+
+        <hr>
+        <label class="form-label small-meta text-uppercase">Subscription URL</label>
+        <div class="input-group">
+          <input class="form-control font-monospace small" id="subscribe-url" value="{{ ics_url }}" readonly>
+          <button type="button" class="btn btn-soft" id="copy-subscribe-url">
+            <i class="fas fa-copy me-1"></i>Copy
+          </button>
+        </div>
+        <div class="form-text">
+          Anyone with this URL can read your scheduled items. If it leaks, rotate it below &mdash; the old URL stops working immediately.
+        </div>
+
+        <details class="mt-3">
+          <summary class="small text-muted" style="cursor:pointer;">How to add it manually</summary>
+          <div class="small text-muted mt-2">
+            <strong>Google Calendar:</strong> &nbsp;Other calendars &rarr; + &rarr; <em>From URL</em> &rarr; paste &rarr; Add calendar.<br>
+            <strong>Outlook (web):</strong> &nbsp;Calendar &rarr; Add calendar &rarr; Subscribe from web &rarr; paste &rarr; Import.<br>
+            <strong>Apple Calendar:</strong> &nbsp;File &rarr; New Calendar Subscription &rarr; paste &rarr; Subscribe.
+          </div>
+        </details>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-soft" id="rotate-calendar-token" style="color: var(--g-danger);">
+          <i class="fas fa-rotate me-1"></i>Rotate URL
+        </button>
+        <button type="button" class="btn btn-soft" data-bs-dismiss="modal">Done</button>
+      </div>
+    </div>
   </div>
 </div>
 {% endblock %}
@@ -150,6 +223,32 @@ function openItem(el) {
 document.querySelectorAll('.cal-item').forEach(el => {
   el.addEventListener('click', () => openItem(el));
   el.addEventListener('keydown', e => { if (e.key === 'Enter') openItem(el); });
+});
+
+/* ---------- Subscribe-to-calendar modal ---------- */
+document.getElementById('copy-subscribe-url')?.addEventListener('click', async () => {
+  const input = document.getElementById('subscribe-url');
+  try {
+    await navigator.clipboard.writeText(input.value);
+    TJ.notify.success('Subscription URL copied to clipboard.');
+  } catch (e) {
+    input.select();
+    document.execCommand('copy');
+    TJ.notify.info('URL selected — press Cmd/Ctrl+C to copy.');
+  }
+});
+
+document.getElementById('rotate-calendar-token')?.addEventListener('click', async () => {
+  const ok = await TJ.confirm("Rotate the subscription URL? The current URL stops working immediately and you'll need to re-add the calendar in every calendar app you've subscribed from.", {
+    title: 'Rotate subscription URL', okLabel: 'Rotate', danger: true,
+  });
+  if (!ok) return;
+  const data = await TJ.api.post('/api/calendar/token/regenerate', {},
+    { progress: true, successMsg: 'Subscription URL rotated' });
+  if (data && data.ics_url) {
+    document.getElementById('subscribe-url').value = data.ics_url;
+    TJ.notify.warning('Re-add the calendar in your Google / Outlook / Apple Calendar with the new URL.');
+  }
 });
 
 /* ---------- Drag-to-reschedule (mouse + touch) ----------
