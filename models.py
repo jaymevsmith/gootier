@@ -235,6 +235,7 @@ class MediaJob(Base):
     error = Column(Text, nullable=True)
     cost_credits = Column(Integer, default=0, nullable=False)
     webhook_token = Column(String, nullable=True, index=True)
+    compose_meta_json = Column(Text, nullable=True)  # JSON for video-compose jobs
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     completed_at = Column(DateTime, nullable=True)
 
@@ -403,6 +404,7 @@ def _upgrade_media(conn):
     _safe_add_column(conn, "social_posts", "image_job_id",         "INTEGER")
     _safe_add_column(conn, "social_posts", "video_job_id",         "INTEGER")
     _safe_add_column(conn, "media_jobs",   "webhook_token",        "VARCHAR")
+    _safe_add_column(conn, "media_jobs",   "compose_meta_json",    "TEXT")
     _safe_add_column(conn, "social_posts", "analytics_json",       "TEXT")
     _safe_add_column(conn, "social_posts", "analytics_fetched_at", "TIMESTAMP")
 

@@ -168,6 +168,32 @@ async def calendar_feed(token: str, db: Session = Depends(get_db)):
     )
 
 
+@router.get("/studio")
+async def studio_page(
+    request: Request,
+    user: User = Depends(get_current_user_optional),
+    db: Session = Depends(get_db),
+):
+    if not user:
+        return RedirectResponse(url="/login", status_code=303)
+    from models import MediaJob
+    from services.credits import balance as credits_balance
+    from services.media import tts_catalog
+    clips = db.query(MediaJob).filter(
+        MediaJob.user_id == user.id,
+        MediaJob.kind == "video",
+        MediaJob.status == "done",
+        MediaJob.result_url != None,  # noqa: E711
+    ).order_by(MediaJob.completed_at.desc().nullslast()).limit(50).all()
+    cat = tts_catalog()
+    default_model_key = next((k for k, v in cat.items() if v.get("default")), None) or next(iter(cat))
+    tts_voices = [v[0] for v in cat[default_model_key]["voices"]] if default_model_key else []
+    return templates.TemplateResponse(request, "studio.html", _ctx(
+        user, clips=clips, credit_balance=credits_balance(db, user),
+        tts_voices=tts_voices,
+    ))
+
+
 @router.get("/blasts")
 async def blasts_page(
     request: Request,

@@ -1,0 +1,305 @@
+{% extends "base.html" %}
+{% block title %}Video studio &middot; Gootier{% endblock %}
+
+{% block page_header %}
+<div class="page-header-row">
+  <div>
+    <div class="eyebrow">Create</div>
+    <h1>Video studio</h1>
+    <p class="lede">Stitch generated clips into a longer video &mdash; add a narration script, layer a music bed, ship it to your channels.</p>
+  </div>
+  <div class="actions">
+    <span class="hl hl-indigo">{{ credit_balance|default(0) }} credits</span>
+  </div>
+</div>
+{% endblock %}
+
+{% block content %}
+{% if not clips %}
+<div class="empty-state">
+  <div class="empty-icon"><i class="fas fa-film"></i></div>
+  <h5>No video clips yet</h5>
+  <p>Generate at least 2 short videos in <a href="/compose">Compose</a> or <a href="/ai-builder">AI builder</a>, then come back here to string them together.</p>
+  <a href="/compose" class="btn tj-grad-btn"><i class="fas fa-film me-2"></i>Make a clip</a>
+</div>
+{% else %}
+
+<div class="row g-4">
+  <div class="col-lg-7">
+    <div class="card-x">
+      <div class="card-x-header">
+        <h6><i class="fas fa-list-ol me-2 text-muted"></i>Pick &amp; order clips</h6>
+        <span class="ms-auto small-meta" id="studio-pick-meta">0 clips picked &middot; ~0s total &middot; cap 60s</span>
+      </div>
+      <div class="card-x-body">
+        <p class="small text-muted">Click clips to add them in order. Click an active clip again to remove it. Number on each clip shows its position in the final video.</p>
+        <div class="row g-3" id="studio-clip-grid">
+          {% for c in clips %}
+          <div class="col-md-4 col-sm-6">
+            <div class="studio-clip" data-clip-id="{{ c.id }}" data-clip-url="{{ c.result_url }}"
+                 data-clip-duration="{{ c.duration_seconds or 5 }}" role="button" tabindex="0">
+              <video src="{{ c.result_url }}" muted preload="metadata" playsinline></video>
+              <span class="studio-clip-pos" aria-hidden="true"></span>
+              <div class="studio-clip-meta">
+                <span class="small-meta">~{{ c.duration_seconds or 5 }}s</span>
+                <span class="small-meta">{{ c.model_key }}</span>
+              </div>
+            </div>
+          </div>
+          {% endfor %}
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="col-lg-5">
+    <div class="card-x mb-3">
+      <div class="card-x-header">
+        <h6><i class="fas fa-microphone me-2 text-muted"></i>Audio</h6>
+      </div>
+      <div class="card-x-body">
+        <div class="form-check form-switch mb-3">
+          <input class="form-check-input" type="checkbox" id="audio-keep-original" checked>
+          <label class="form-check-label" for="audio-keep-original">Keep each clip's original audio</label>
+          <div class="form-text">Native audio from Veo 3.1 clips comes through. Silent clips stay silent.</div>
+        </div>
+
+        <hr>
+
+        <div class="form-check form-switch mb-2">
+          <input class="form-check-input" type="checkbox" id="audio-add-narration">
+          <label class="form-check-label" for="audio-add-narration">Add narration (TTS)</label>
+        </div>
+        <div id="narration-panel" class="d-none ms-1">
+          <label class="form-label small">Voice</label>
+          <select class="form-select form-select-sm mb-2" id="narration-voice">
+            {% for v in tts_voices %}<option value="{{ v }}">{{ v }}</option>{% endfor %}
+          </select>
+          <label class="form-label small">Script</label>
+          <textarea class="form-control" id="narration-script" rows="4" maxlength="1500"
+                    placeholder="Welcome to our summer collection — three new flavours, one place to find them."></textarea>
+          <div class="form-text">
+            <span id="narration-chars">0</span> / 1500 chars &middot;
+            <span class="text-muted">Original audio ducks to 15% when narration is on.</span>
+          </div>
+        </div>
+
+        <hr>
+
+        <div class="form-check form-switch mb-2">
+          <input class="form-check-input" type="checkbox" id="audio-add-music">
+          <label class="form-check-label" for="audio-add-music">Add music bed</label>
+        </div>
+        <div id="music-panel" class="d-none ms-1">
+          <label class="form-label small">Music URL</label>
+          <input class="form-control form-control-sm" id="music-url" type="url"
+                 placeholder="https://example.com/track.mp3">
+          <div class="form-text">Direct link to any .mp3 / .wav / .m4a. Loops to fit, mixes at -18 dB so dialog stays clear.</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card-x mb-3">
+      <div class="card-x-body">
+        <div class="small-meta mb-1">Estimated cost</div>
+        <div class="d-flex align-items-baseline gap-2">
+          <span class="fw-bold" style="font-size:1.5rem;" id="studio-cost">50</span>
+          <span class="small text-muted">credits</span>
+        </div>
+        <div class="small-meta" id="studio-cost-breakdown">Base 50 + narration 0 + music 0</div>
+      </div>
+    </div>
+
+    <button class="btn tj-grad-btn w-100 btn-lg" id="studio-submit" disabled>
+      <i class="fas fa-wand-magic-sparkles me-2"></i>Compose video
+    </button>
+  </div>
+</div>
+
+<!-- Job-in-flight modal -->
+<div class="modal fade" id="compose-modal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered modal-lg">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title"><i class="fas fa-film me-2 text-muted"></i>Composing video</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" id="compose-close-btn"></button>
+      </div>
+      <div class="modal-body">
+        <div id="compose-running" class="text-center py-4">
+          <div class="spinner-border text-primary mb-3" role="status"></div>
+          <div class="fw-semibold" id="compose-running-label">Downloading clips…</div>
+          <div class="small text-muted mt-1">Encoding usually takes 30s-90s depending on length.</div>
+        </div>
+        <div id="compose-result" class="d-none text-center">
+          <video id="compose-result-preview" controls playsinline
+                 style="max-width:100%; max-height:420px; border-radius:var(--g-radius-md); border:1px solid var(--g-border-soft); background:#000;">
+          </video>
+          <div class="small-meta mt-2" id="compose-result-meta"></div>
+        </div>
+        <div id="compose-error" class="d-none">
+          <div class="alert alert-danger mb-0" id="compose-error-msg"></div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-soft" data-bs-dismiss="modal">Done</button>
+        <a href="/compose" class="btn tj-grad-btn d-none" id="compose-use-link">
+          <i class="fas fa-arrow-right me-1"></i>Use in a post
+        </a>
+      </div>
+    </div>
+  </div>
+</div>
+
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<style>
+.studio-clip {
+  position: relative;
+  border: 2px solid var(--g-border-soft);
+  border-radius: var(--g-radius-md);
+  overflow: hidden;
+  background: #000;
+  cursor: pointer;
+  aspect-ratio: 9 / 16;
+  transition: border-color .15s ease, transform .1s ease;
+}
+.studio-clip:hover { border-color: var(--g-primary); }
+.studio-clip.active { border-color: var(--g-primary); transform: scale(.98); }
+.studio-clip video { width: 100%; height: 100%; object-fit: cover; display: block; }
+.studio-clip-pos {
+  position: absolute; top: .35rem; left: .35rem;
+  width: 26px; height: 26px;
+  background: var(--g-grad); color: white;
+  border-radius: 50%; display: none;
+  align-items: center; justify-content: center;
+  font-weight: 700; font-size: .85rem;
+  box-shadow: 0 2px 6px rgba(0,0,0,.4);
+}
+.studio-clip.active .studio-clip-pos { display: flex; }
+.studio-clip-meta {
+  position: absolute; bottom: 0; left: 0; right: 0;
+  padding: .25rem .4rem;
+  background: linear-gradient(180deg, transparent, rgba(0,0,0,.6));
+  display: flex; justify-content: space-between;
+  color: white; font-size: .68rem;
+}
+.studio-clip-meta .small-meta { color: white; opacity: .85; }
+</style>
+
+<script>
+{% if clips %}
+const picked = [];  // ordered array of clip IDs
+const clipMeta = {};  // id -> {url, duration}
+document.querySelectorAll('.studio-clip').forEach(el => {
+  const id = parseInt(el.dataset.clipId, 10);
+  clipMeta[id] = {
+    url: el.dataset.clipUrl,
+    duration: parseFloat(el.dataset.clipDuration || '5'),
+  };
+  el.addEventListener('click', () => toggleClip(id));
+  el.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleClip(id); } });
+});
+
+function toggleClip(id) {
+  const idx = picked.indexOf(id);
+  if (idx >= 0) picked.splice(idx, 1);
+  else if (picked.length < 10) picked.push(id);
+  else { TJ.notify.warning('Max 10 clips per compose.'); return; }
+  paintGrid();
+  paintCost();
+}
+function paintGrid() {
+  document.querySelectorAll('.studio-clip').forEach(el => {
+    const id = parseInt(el.dataset.clipId, 10);
+    const pos = picked.indexOf(id);
+    el.classList.toggle('active', pos >= 0);
+    el.querySelector('.studio-clip-pos').textContent = pos >= 0 ? (pos + 1) : '';
+  });
+  const total = picked.reduce((s, id) => s + clipMeta[id].duration, 0);
+  const meta = document.getElementById('studio-pick-meta');
+  const over = total > 60;
+  meta.innerHTML = `${picked.length} clips picked &middot; ~${total.toFixed(0)}s total &middot; cap 60s`;
+  meta.style.color = over ? 'var(--g-warning)' : '';
+  document.getElementById('studio-submit').disabled = picked.length < 2;
+}
+
+const narrChk = document.getElementById('audio-add-narration');
+const narrPanel = document.getElementById('narration-panel');
+const narrScript = document.getElementById('narration-script');
+const narrChars = document.getElementById('narration-chars');
+const musicChk = document.getElementById('audio-add-music');
+const musicPanel = document.getElementById('music-panel');
+narrChk.addEventListener('change', () => { narrPanel.classList.toggle('d-none', !narrChk.checked); paintCost(); });
+narrScript.addEventListener('input', () => { narrChars.textContent = narrScript.value.length; paintCost(); });
+musicChk.addEventListener('change', () => { musicPanel.classList.toggle('d-none', !musicChk.checked); paintCost(); });
+
+function paintCost() {
+  let cost = 50;
+  let nrCost = 0;
+  if (narrChk.checked && narrScript.value.length > 3) {
+    nrCost = Math.ceil(narrScript.value.length / 100) * 5 + 1;
+    cost += nrCost;
+  }
+  document.getElementById('studio-cost').textContent = cost;
+  document.getElementById('studio-cost-breakdown').textContent =
+    `Base 50 + narration ${nrCost} + music 0`;
+}
+
+document.getElementById('studio-submit').addEventListener('click', async () => {
+  if (picked.length < 2) return;
+  const payload = {
+    source_job_ids: [...picked],
+    keep_original_audio: document.getElementById('audio-keep-original').checked,
+    narration_script: narrChk.checked && narrScript.value.trim() ? narrScript.value.trim() : null,
+    narration_voice: document.getElementById('narration-voice').value || null,
+    music_url: musicChk.checked && document.getElementById('music-url').value.trim()
+                ? document.getElementById('music-url').value.trim() : null,
+  };
+
+  const modalEl = document.getElementById('compose-modal');
+  const modal = new bootstrap.Modal(modalEl);
+  document.getElementById('compose-running').classList.remove('d-none');
+  document.getElementById('compose-result').classList.add('d-none');
+  document.getElementById('compose-error').classList.add('d-none');
+  document.getElementById('compose-use-link').classList.add('d-none');
+  document.getElementById('compose-running-label').textContent = 'Submitting…';
+  modal.show();
+
+  const data = await TJ.api.post('/api/media/jobs/compose', payload);
+  if (!data) { modal.hide(); return; }
+  document.getElementById('compose-running-label').textContent = 'Downloading clips, normalising, mixing audio…';
+  pollComposeJob(data.id, 0);
+});
+
+function pollComposeJob(jobId, attempt) {
+  const wait = attempt < 6 ? 4000 : (attempt < 20 ? 6000 : 10000);
+  setTimeout(async () => {
+    const job = await TJ.api.get(`/api/media/jobs/${jobId}`);
+    if (!job) return;
+    if (job.status === 'done') {
+      document.getElementById('compose-running').classList.add('d-none');
+      document.getElementById('compose-result-preview').src = job.result_url;
+      document.getElementById('compose-result-meta').textContent =
+        `Took ${job.completed_at ? Math.round((new Date(job.completed_at) - new Date(job.created_at)) / 1000) : '–'}s · ${job.cost_credits} credits`;
+      document.getElementById('compose-result').classList.remove('d-none');
+      document.getElementById('compose-use-link').classList.remove('d-none');
+      TJ.notify.success('Composed — find it in Compose or attach it to a post.');
+      return;
+    }
+    if (job.status === 'failed') {
+      document.getElementById('compose-running').classList.add('d-none');
+      document.getElementById('compose-error-msg').textContent = job.error || 'Composition failed. Credits were refunded.';
+      document.getElementById('compose-error').classList.remove('d-none');
+      return;
+    }
+    pollComposeJob(jobId, attempt + 1);
+  }, wait);
+}
+
+paintGrid();
+paintCost();
+{% endif %}
+</script>
+{% endblock %}

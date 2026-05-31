@@ -21,6 +21,25 @@ from services.env_config import get_env
 # retail, with margin built into each model's price tag. Tune freely.
 # ---------------------------------------------------------------------------
 
+# Text-to-speech models live alongside image/video so the catalog API can
+# surface them to the /studio narration picker.
+TTS_MODEL_CATALOG = {
+    "eleven-turbo": {
+        "endpoint": "fal-ai/elevenlabs/tts/turbo-v2.5",
+        "label": "ElevenLabs Turbo v2.5 — natural, fast (default)",
+        "credits_per_100_chars": 5,
+        "voices": [
+            ("Rachel",   "21m00Tcm4TlvDq8ikWAM"),
+            ("Bella",    "EXAVITQu4vr4xnSDxMaL"),
+            ("Antoni",   "ErXwobaYiN019PkySvjV"),
+            ("Domi",     "AZnzlk1XvdvUeBnXmlld"),
+            ("Adam",     "pNInz6obpgDQGcFmaJgB"),
+        ],
+        "default": True,
+    },
+}
+
+
 MEDIA_MODEL_CATALOG = {
     "image": {
         "nano-banana-2": {
@@ -82,6 +101,10 @@ def catalog_for(kind: str) -> dict:
     if kind not in MEDIA_MODEL_CATALOG:
         raise ValueError(f"Unknown media kind: {kind!r}")
     return MEDIA_MODEL_CATALOG[kind]
+
+
+def tts_catalog() -> dict:
+    return TTS_MODEL_CATALOG
 
 
 def resolve_model(kind: str, model_key: Optional[str] = None) -> dict:

@@ -28,6 +28,12 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PORT=8000
 
+# ffmpeg powers the /studio video-compose pipeline (concat clips, mix TTS
+# and music beds). Pulls in ~150MB; the static binary is smaller but the
+# apt build is the well-trodden path.
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg \
+ && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
 COPY --from=builder /wheels /wheels

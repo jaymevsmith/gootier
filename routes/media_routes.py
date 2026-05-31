@@ -394,6 +394,177 @@ class VideoJobCreate(BaseModel):
     generate_audio: bool = True
 
 
+class ComposeJobCreate(BaseModel):
+    source_job_ids: List[int] = Field(..., min_length=1, max_length=10)
+    keep_original_audio: bool = True
+    narration_script: Optional[str] = None
+    narration_voice: Optional[str] = None
+    music_url: Optional[str] = None
+
+
+@router.post("/api/media/jobs/compose")
+async def create_compose_job(
+    payload: ComposeJobCreate,
+    request: Request,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """String 2-10 video clips (from this user's prior video MediaJobs) into a
+    single video, optionally with a TTS narration overlay and a music bed."""
+    import json as _json
+    from services.media import tts_catalog
+    from services.video_composer import MAX_TOTAL_SECONDS
+
+    sources = db.query(MediaJob).filter(
+        MediaJob.id.in_(payload.source_job_ids),
+        MediaJob.user_id == user.id,
+        MediaJob.kind == "video",
+        MediaJob.status == "done",
+        MediaJob.result_url != None,  # noqa: E711
+    ).all()
+    if len(sources) != len(payload.source_job_ids):
+        raise HTTPException(status_code=400,
+                            detail="One or more source clips are missing, not yours, or not finished yet.")
+    by_id = {s.id: s for s in sources}
+    ordered_clips = [by_id[i] for i in payload.source_job_ids if i in by_id]
+
+    # Credit cost: flat 50 for the compose + TTS surcharge if narration set.
+    cost = 50
+    tts_endpoint = None
+    voice_id = None
+    if payload.narration_script:
+        script = (payload.narration_script or "").strip()
+        if len(script) < 4:
+            raise HTTPException(status_code=400, detail="Narration script too short.")
+        if len(script) > 1500:
+            raise HTTPException(status_code=400, detail="Narration script too long (max 1500 chars).")
+        cat = tts_catalog()
+        default = next((k for k, v in cat.items() if v.get("default")), None)
+        chosen = payload.narration_voice or "Rachel"
+        model = cat.get(default) or next(iter(cat.values()))
+        tts_endpoint = model["endpoint"]
+        voice_map = dict(model["voices"])
+        voice_id = voice_map.get(chosen) or list(voice_map.values())[0]
+        cost += int((len(script) / 100) * model["credits_per_100_chars"]) + 1
+
+    credits_spend(db, user, cost, reason="video_compose",
+                  detail=f"clips={len(ordered_clips)} tts={'yes' if tts_endpoint else 'no'} music={'yes' if payload.music_url else 'no'}")
+
+    job = MediaJob(
+        user_id=user.id,
+        kind="video",
+        provider="internal-ffmpeg",
+        model_key="compose",
+        model_endpoint="internal:ffmpeg-compose",
+        prompt=(payload.narration_script or "")[:500],
+        ref_asset_ids=None,
+        status="queued",
+        cost_credits=cost,
+        compose_meta_json=_json.dumps({
+            "source_job_ids": payload.source_job_ids,
+            "keep_original_audio": payload.keep_original_audio,
+            "narration_voice": payload.narration_voice,
+            "music_url": payload.music_url,
+        }),
+    )
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+
+    # Background task — ffmpeg work is bounded (~20-40s for a 60s output)
+    # and we don't need a fal request_id since the result is local.
+    from fastapi import BackgroundTasks
+    bg: BackgroundTasks = request.scope.get("background_tasks") or BackgroundTasks()
+    bg.add_task(_run_compose_job, job.id, [c.result_url for c in ordered_clips],
+                payload.keep_original_audio,
+                payload.narration_script, tts_endpoint, voice_id,
+                payload.music_url, user.id)
+    request.scope["background_tasks"] = bg
+    # Fire immediately if FastAPI hasn't attached a tasks runner yet.
+    import asyncio as _asyncio
+    _asyncio.create_task(_run_compose_job(
+        job.id, [c.result_url for c in ordered_clips],
+        payload.keep_original_audio,
+        payload.narration_script, tts_endpoint, voice_id,
+        payload.music_url, user.id,
+    ))
+
+    log_action(db, user, "CREATE", "MediaJob", str(job.id),
+               detail=f"compose: {len(ordered_clips)} clips")
+    return _serialize_job(job)
+
+
+async def _run_compose_job(job_id: int, clip_urls: list, keep_original: bool,
+                            narration_script: Optional[str], tts_endpoint: Optional[str],
+                            voice_id: Optional[str], music_url: Optional[str],
+                            user_id: int) -> None:
+    """Background worker — does the actual ffmpeg + TTS work + DB update."""
+    from datetime import datetime as _dt
+    from database import SessionLocal
+    from services.video_composer import compose, synth_tts_to_file
+    import tempfile, os as _os, logging
+    log = logging.getLogger("gootier.composer")
+    db = SessionLocal()
+    try:
+        job = db.query(MediaJob).filter(MediaJob.id == job_id).first()
+        if not job:
+            return
+        job.status = "running"
+        db.commit()
+
+        narration_path = None
+        music_path = None
+        tmp_audio_dir = None
+        try:
+            if narration_script and tts_endpoint and voice_id:
+                tmp_audio_dir = tempfile.mkdtemp(prefix="gootier-tts-")
+                narration_path = _os.path.join(tmp_audio_dir, "narration.mp3")
+                await synth_tts_to_file(narration_script, voice_id, narration_path,
+                                          model_endpoint=tts_endpoint)
+            if music_url:
+                if tmp_audio_dir is None:
+                    tmp_audio_dir = tempfile.mkdtemp(prefix="gootier-music-")
+                music_path = _os.path.join(tmp_audio_dir, "music")
+                from services.video_composer import _download
+                await _download(music_url, music_path)
+
+            url = await compose(
+                clip_urls,
+                narration_path=narration_path,
+                music_path=music_path,
+                keep_original_audio=keep_original,
+            )
+            job.result_url = url
+            job.thumbnail_url = url
+            job.status = "done"
+            job.completed_at = _dt.utcnow()
+            db.commit()
+            log.info("compose job %s done -> %s", job.id, url)
+        finally:
+            if tmp_audio_dir:
+                import shutil as _shutil
+                _shutil.rmtree(tmp_audio_dir, ignore_errors=True)
+    except Exception as e:
+        log.exception("compose job %s failed: %s", job_id, e)
+        try:
+            job = db.query(MediaJob).filter(MediaJob.id == job_id).first()
+            if job and job.status != "done":
+                from services.credits import grant as _grant
+                user = db.query(User).filter(User.id == user_id).first()
+                if user and job.cost_credits:
+                    _grant(db, user, job.cost_credits,
+                           reason=f"refund_failed_{job.id}",
+                           detail=f"Auto-refund — compose failed: {e}")
+                job.status = "failed"
+                job.error = str(e)[:1000]
+                job.completed_at = _dt.utcnow()
+                db.commit()
+        except Exception:
+            log.exception("refund/finalise also failed for job %s", job_id)
+    finally:
+        db.close()
+
+
 @router.post("/api/media/jobs/video")
 async def create_video_job(
     payload: VideoJobCreate,
