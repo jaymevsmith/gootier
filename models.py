@@ -432,27 +432,44 @@ def _seed_tier_configs(db) -> None:
 
 def _seed_env_configs(db) -> None:
     """Ensure a row exists for every KNOWN_ENV_KEYS entry. Doesn't overwrite
-    user-edited values. Pulls initial value from os.environ on first seed."""
+    user-edited values. Pulls initial value from os.environ on first seed.
+
+    Multi-worker safe: each row is committed in its own transaction, and a
+    UniqueViolation from a racing worker is caught + rolled back rather than
+    nuking the whole startup (which is what brought down the previous deploy
+    when two gunicorn workers both tried to seed fresh env keys at once).
+    """
     import os as _os
+    from sqlalchemy.exc import IntegrityError
+
     for key, group, is_secret, is_locked, desc in KNOWN_ENV_KEYS:
-        existing = db.query(EnvConfig).filter(EnvConfig.key == key).first()
-        if existing:
-            # Refresh metadata (description / group / locked / secret) in case
-            # we change them in code — but never overwrite the value.
-            existing.group_name = group
-            existing.is_secret = is_secret
-            existing.is_locked = is_locked
-            existing.description = desc
+        try:
+            existing = db.query(EnvConfig).filter(EnvConfig.key == key).first()
+            if existing:
+                # Refresh metadata (description / group / locked / secret) in
+                # case we change them in code — but never overwrite the value.
+                existing.group_name = group
+                existing.is_secret = is_secret
+                existing.is_locked = is_locked
+                existing.description = desc
+            else:
+                db.add(EnvConfig(
+                    key=key,
+                    value=_os.getenv(key, "") or None,
+                    is_secret=is_secret,
+                    is_locked=is_locked,
+                    group_name=group,
+                    description=desc,
+                ))
+            db.commit()
+        except IntegrityError:
+            # A sibling worker won the race for this key. Rollback our pending
+            # insert and move on — the row exists, that's what we wanted.
+            db.rollback()
             continue
-        db.add(EnvConfig(
-            key=key,
-            value=_os.getenv(key, "") or None,
-            is_secret=is_secret,
-            is_locked=is_locked,
-            group_name=group,
-            description=desc,
-        ))
-    db.commit()
+        except Exception:
+            db.rollback()
+            raise
 
 
 def _seed_role_configs(db) -> None:
