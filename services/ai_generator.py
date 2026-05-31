@@ -21,14 +21,25 @@ Output strict JSON only — no prose, no markdown fences. Schema:
       "content": "post body (social) or full HTML body (email)",
       "subject": "email subject (email_blast only, else null)",
       "link_url": "optional URL or null",
-      "image_url": "optional URL or null"
+      "image_prompt": "concrete visual prompt for an image generator, OR null if no image suits this item",
+      "video_prompt": "concrete motion+scene prompt for an image-to-video generator, OR null if no video is warranted",
+      "suggested_asset_kind": "mascot | person | product | other — which reference asset works best for the image/video, OR null"
     }
   ]
 }
 
 Rules:
-- Social posts: punchy, on-brand, use the platform-native voice. <= 280 chars unless platform allows more.
+- Social posts: punchy, on-brand, platform-native voice. <= 280 chars unless platform allows more.
 - Email blasts: full HTML body, mobile-friendly, single CTA, include subject line.
+- Image prompts: be visual + concrete. Mention setting, lighting, mood, composition. Assume the brand's
+  reference character/product image will be added as a reference at generation time — don't describe its
+  appearance, just the scene it's in. Example: "studio backdrop with soft afternoon light, holding the
+  bottle, candid smile, eye-level shot, shallow depth of field".
+- Video prompts: describe motion + camera move + scene change. 5-10 seconds of content. Reserve for
+  high-impact moments (launches, reveals, testimonials) — most items should have image_prompt only and
+  video_prompt: null.
+- Reserve suggested_asset_kind: "person" for testimonials/spokesperson moments, "product" for SKU shots
+  and demos, "mascot" for brand-voice posts.
 - Spread items across the requested schedule window. No two items at the same timestamp.
 - If schedule is unspecified, use null for scheduled_at (immediate publish)."""
 

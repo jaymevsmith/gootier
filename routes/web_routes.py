@@ -9,7 +9,8 @@ from sqlalchemy.orm import Session
 
 from auth import get_current_user_optional
 from database import get_db
-from models import EmailBlast, SocialConnection, SocialPost, User
+from models import EmailBlast, MediaJob, SocialConnection, SocialPost, User
+from services.credits import balance as credits_balance
 from services.quotas import usage_summary
 
 router = APIRouter()
@@ -43,12 +44,25 @@ async def dashboard(
         EmailBlast.user_id == user.id, EmailBlast.status == "pending",
     ).count()
     usage = usage_summary(db, user)
+    media_in_flight = db.query(MediaJob).filter(
+        MediaJob.user_id == user.id,
+        MediaJob.status.in_(("queued", "running")),
+    ).order_by(MediaJob.created_at.desc()).limit(8).all()
+    recent_media = db.query(MediaJob).filter(
+        MediaJob.user_id == user.id,
+        MediaJob.status == "done",
+        MediaJob.result_url != None,  # noqa: E711
+    ).order_by(MediaJob.completed_at.desc().nullslast()).limit(8).all()
+    credit_balance = credits_balance(db, user)
     return templates.TemplateResponse(request, "dashboard.html", _ctx(
         user,
         connections=connections,
         pending_posts=pending_posts,
         pending_blasts=pending_blasts,
         usage=usage,
+        media_in_flight=media_in_flight,
+        recent_media=recent_media,
+        credit_balance=credit_balance,
     ))
 
 

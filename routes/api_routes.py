@@ -14,6 +14,11 @@ from models import (
     EmailBlast, SocialConnection, SocialPost, User, log_action,
 )
 from services.ai_generator import generate_campaign
+from services.credits import balance as credits_balance, spend as credits_spend
+from services.media import (
+    MEDIA_MODEL_CATALOG, build_image_payload, build_video_payload,
+    resolve_model, submit_job,
+)
 from services.quotas import check_and_raise, check_per_call
 from services.social_publish import publish_to_connections
 
@@ -54,6 +59,9 @@ class CampaignItem(BaseModel):
     link_url: Optional[str] = None
     image_url: Optional[str] = None
     scheduled_at: Optional[datetime] = None
+    image_prompt: Optional[str] = None
+    video_prompt: Optional[str] = None
+    suggested_asset_kind: Optional[str] = None
 
 
 class RescheduleRequest(BaseModel):
@@ -70,10 +78,20 @@ class PasswordChange(BaseModel):
     new_password: str
 
 
+class MediaScheduleSettings(BaseModel):
+    generate_images: bool = False
+    generate_videos: bool = False
+    image_model_key: Optional[str] = None  # falls back to default in catalog
+    video_model_key: Optional[str] = None
+    image_asset_id: Optional[int] = None   # default reference for image jobs
+    video_asset_id: Optional[int] = None   # default reference for video jobs
+
+
 class CampaignScheduleRequest(BaseModel):
     items: List[CampaignItem]
     connection_ids: List[int] = []
     recipients: List[str] = []
+    media: Optional[MediaScheduleSettings] = None
 
 
 # ------------------------------ Profile ------------------------------ #
@@ -391,6 +409,7 @@ async def ai_schedule(
 ):
     if not payload.items:
         raise HTTPException(status_code=400, detail="No items to schedule")
+    from models import MediaAsset, MediaJob  # local to keep module deps tidy
 
     needs_social = any(i.kind == "social_post" for i in payload.items)
     needs_email = any(i.kind == "email_blast" for i in payload.items)
@@ -428,12 +447,65 @@ async def ai_schedule(
     conn_csv = ",".join(str(c.id) for c in owned)
     recipients_block = "\n".join(payload.recipients)
 
+    # Media settings — validate references + pre-flight total credit cost.
+    media_settings = payload.media or MediaScheduleSettings()
+    image_model = resolve_model("image", media_settings.image_model_key) if media_settings.generate_images else None
+    video_model = resolve_model("video", media_settings.video_model_key) if media_settings.generate_videos else None
+    image_asset = None
+    video_asset = None
+    if media_settings.generate_images:
+        if not media_settings.image_asset_id:
+            raise HTTPException(status_code=400, detail="Pick a reference asset for AI-generated images.")
+        image_asset = db.query(MediaAsset).filter(
+            MediaAsset.id == media_settings.image_asset_id,
+            MediaAsset.user_id == user.id,
+            MediaAsset.is_active == True,  # noqa: E712
+        ).first()
+        if not image_asset:
+            raise HTTPException(status_code=400, detail="Image reference asset not found.")
+    if media_settings.generate_videos:
+        if not media_settings.video_asset_id:
+            raise HTTPException(status_code=400, detail="Pick a reference asset for AI-generated videos.")
+        video_asset = db.query(MediaAsset).filter(
+            MediaAsset.id == media_settings.video_asset_id,
+            MediaAsset.user_id == user.id,
+            MediaAsset.is_active == True,  # noqa: E712
+        ).first()
+        if not video_asset:
+            raise HTTPException(status_code=400, detail="Video reference asset not found.")
+
+    # Pre-flight: count items that actually want media, sum cost, check balance.
+    img_jobs_wanted = sum(
+        1 for i in payload.items
+        if media_settings.generate_images and i.kind == "social_post" and i.image_prompt
+    )
+    vid_jobs_wanted = sum(
+        1 for i in payload.items
+        if media_settings.generate_videos and i.kind == "social_post" and i.video_prompt
+    )
+    total_credit_cost = (
+        (image_model["credits"] * img_jobs_wanted if image_model else 0)
+        + (video_model["credits"] * vid_jobs_wanted if video_model else 0)
+    )
+    if total_credit_cost > 0:
+        bal = credits_balance(db, user)
+        if bal < total_credit_cost:
+            raise HTTPException(
+                status_code=402,
+                detail=f"Not enough credits for the media in this campaign "
+                       f"({total_credit_cost} needed, {bal} available). "
+                       f"Top up at /billing or reduce the campaign scope.",
+            )
+
     created_posts = 0
     created_blasts = 0
+    enqueued_image_jobs = 0
+    enqueued_video_jobs = 0
+    media_errors: List[str] = []
 
     for item in payload.items:
         if item.kind == "social_post":
-            db.add(SocialPost(
+            post = SocialPost(
                 user_id=user.id,
                 content=item.content,
                 image_url=item.image_url,
@@ -442,8 +514,34 @@ async def ai_schedule(
                 scheduled_at=item.scheduled_at,
                 status="pending",
                 ai_generated=True,
-            ))
+            )
+            db.add(post)
+            db.flush()  # need post.id for media job FK
             created_posts += 1
+
+            if media_settings.generate_images and item.image_prompt and image_model and image_asset:
+                job = await _enqueue_media_job(
+                    db, user, kind="image", model=image_model,
+                    prompt=item.image_prompt, ref_urls=[image_asset.file_url],
+                    ref_asset_ids=[image_asset.id],
+                )
+                if job is None:
+                    media_errors.append(f"image gen failed for item {created_posts}")
+                else:
+                    post.image_job_id = job.id
+                    enqueued_image_jobs += 1
+            if media_settings.generate_videos and item.video_prompt and video_model and video_asset:
+                job = await _enqueue_media_job(
+                    db, user, kind="video", model=video_model,
+                    prompt=item.video_prompt, ref_urls=[video_asset.file_url],
+                    ref_asset_ids=[video_asset.id],
+                )
+                if job is None:
+                    media_errors.append(f"video gen failed for item {created_posts}")
+                else:
+                    post.video_job_id = job.id
+                    enqueued_video_jobs += 1
+
         elif item.kind == "email_blast":
             db.add(EmailBlast(
                 user_id=user.id,
@@ -460,6 +558,58 @@ async def ai_schedule(
     db.commit()
     log_action(
         db, user, "CREATE", "Campaign",
-        detail=f"AI campaign: {created_posts} post(s), {created_blasts} blast(s)",
+        detail=f"AI campaign: {created_posts} post(s), {created_blasts} blast(s), "
+               f"{enqueued_image_jobs} image jobs, {enqueued_video_jobs} video jobs",
     )
-    return {"posts": created_posts, "blasts": created_blasts}
+    return {
+        "posts": created_posts,
+        "blasts": created_blasts,
+        "image_jobs": enqueued_image_jobs,
+        "video_jobs": enqueued_video_jobs,
+        "media_errors": media_errors,
+    }
+
+
+async def _enqueue_media_job(db, user, *, kind: str, model: dict, prompt: str,
+                              ref_urls: list, ref_asset_ids: list):
+    """Spend credits + create a MediaJob row + submit to fal. Returns the job
+    on success, or None if any step failed (with credit refund + log)."""
+    from models import MediaJob
+    cost = int(model["credits"])
+    try:
+        credits_spend(db, user, cost, reason=f"{kind}_gen",
+                       detail=f"AI campaign — model={model['key']}")
+    except HTTPException:
+        return None
+
+    job = MediaJob(
+        user_id=user.id,
+        kind=kind,
+        provider="fal",
+        model_key=model["key"],
+        model_endpoint=model["endpoint"],
+        prompt=prompt,
+        ref_asset_ids=",".join(str(i) for i in ref_asset_ids),
+        status="queued",
+        cost_credits=cost,
+    )
+    db.add(job)
+    db.flush()
+
+    try:
+        if kind == "image":
+            fal_payload = build_image_payload(model, prompt, ref_urls)
+        else:
+            fal_payload = build_video_payload(model, prompt, ref_urls[0])
+        request_id = await submit_job(model["endpoint"], fal_payload)
+        job.fal_request_id = request_id
+        job.status = "running"
+        return job
+    except Exception as e:
+        # Refund the spend by adding a positive ledger entry.
+        from services.credits import grant as credits_grant
+        credits_grant(db, user, cost, reason=f"refund_failed_{job.id}",
+                       detail=f"Auto-refund — AI campaign media job failed: {e}")
+        job.status = "failed"
+        job.error = f"submit failed: {e}"
+        return None

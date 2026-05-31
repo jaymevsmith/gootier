@@ -118,6 +118,8 @@ class SocialPost(Base):
     image_url = Column(String, nullable=True)
     video_url = Column(String, nullable=True)
     link_url = Column(String, nullable=True)
+    image_job_id = Column(Integer, ForeignKey("media_jobs.id"), nullable=True)
+    video_job_id = Column(Integer, ForeignKey("media_jobs.id"), nullable=True)
     connection_ids = Column(String, nullable=False)  # comma-separated
     scheduled_at = Column(DateTime, nullable=True)
     status = Column(String, default="pending", nullable=False)
@@ -362,6 +364,10 @@ def _upgrade_media(conn):
     Base.metadata.create_all; this is for additive schema changes."""
     if not _column_exists(conn, "social_posts", "video_url"):
         conn.execute(text("ALTER TABLE social_posts ADD COLUMN video_url VARCHAR"))
+    if not _column_exists(conn, "social_posts", "image_job_id"):
+        conn.execute(text("ALTER TABLE social_posts ADD COLUMN image_job_id INTEGER"))
+    if not _column_exists(conn, "social_posts", "video_job_id"):
+        conn.execute(text("ALTER TABLE social_posts ADD COLUMN video_job_id INTEGER"))
 
 
 def _seed_tier_configs(db) -> None:

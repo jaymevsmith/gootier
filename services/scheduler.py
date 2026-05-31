@@ -5,7 +5,7 @@ from datetime import datetime
 from typing import List
 
 from database import SessionLocal
-from models import EmailBlast, SocialConnection, SocialPost
+from models import EmailBlast, MediaJob, SocialConnection, SocialPost
 from services.email_utils import send_blast_email
 from services.social_publish import publish_to_connections
 
@@ -30,6 +30,14 @@ async def _process_due_posts() -> None:
 
 
 async def _publish_post(db, post: SocialPost) -> None:
+    # If this post is waiting on AI-generated media jobs, hold publishing
+    # until those jobs are either done or failed. (Failed media jobs just
+    # mean the post publishes without that asset.)
+    image_url, video_url, wait = _resolve_media_for_post(db, post)
+    if wait:
+        logger.info("post %s waiting on AI media jobs — will retry next tick", post.id)
+        return
+
     conn_ids = [int(x) for x in (post.connection_ids or "").split(",") if x.strip().isdigit()]
     connections: List[SocialConnection] = (
         db.query(SocialConnection)
@@ -47,9 +55,14 @@ async def _publish_post(db, post: SocialPost) -> None:
     results = await publish_to_connections(
         connections, post.content,
         link_url=post.link_url,
-        image_url=post.image_url,
-        video_url=post.video_url,
+        image_url=image_url,
+        video_url=video_url,
     )
+    # Persist any media URLs that we lazily resolved so subsequent reads see them.
+    if image_url and image_url != post.image_url:
+        post.image_url = image_url
+    if video_url and video_url != post.video_url:
+        post.video_url = video_url
     successes = sum(1 for r in results.values() if r.get("success"))
     if successes == len(connections):
         post.status = "published"
@@ -86,6 +99,37 @@ def _process_due_blasts() -> None:
             db.commit()
     finally:
         db.close()
+
+
+def _resolve_media_for_post(db, post: SocialPost):
+    """Returns (image_url, video_url, wait_flag).
+
+    - image_url / video_url: the URL to publish (post field if set, else the
+      result_url from the linked MediaJob if it's done).
+    - wait_flag: True if any linked job is still queued/running — caller
+      should skip this tick.
+    """
+    image_url = post.image_url
+    video_url = post.video_url
+    wait = False
+
+    for slot, job_id in (("image", post.image_job_id), ("video", post.video_job_id)):
+        if not job_id:
+            continue
+        job = db.query(MediaJob).filter(MediaJob.id == job_id).first()
+        if not job:
+            continue
+        if job.status in ("queued", "running"):
+            wait = True
+            continue
+        if job.status == "done" and job.result_url:
+            if slot == "image" and not image_url:
+                image_url = job.result_url
+            elif slot == "video" and not video_url:
+                video_url = job.result_url
+        # failed / cancelled jobs are treated as "no media available" — post still publishes
+
+    return image_url, video_url, wait
 
 
 async def scheduler_loop() -> None:

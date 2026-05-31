@@ -68,6 +68,41 @@
         placeholder="alice@example.com&#10;bob@example.com"></textarea>
     </div>
 
+    <div id="media-section" class="mb-3 d-none">
+      <hr>
+      <h6 class="mb-3"><i class="fas fa-images me-2 text-muted"></i>AI-generated media (optional)</h6>
+      <div id="media-balance" class="small-meta mb-3"></div>
+      <div class="row g-3 mb-3">
+        <div class="col-md-6">
+          <div class="form-check form-switch">
+            <input class="form-check-input" type="checkbox" id="media-gen-images">
+            <label class="form-check-label fw-semibold" for="media-gen-images">
+              Generate images
+            </label>
+            <div class="small-meta" id="media-images-cost">&mdash;</div>
+          </div>
+        </div>
+        <div class="col-md-6">
+          <div class="form-check form-switch">
+            <input class="form-check-input" type="checkbox" id="media-gen-videos">
+            <label class="form-check-label fw-semibold" for="media-gen-videos">
+              Generate videos
+            </label>
+            <div class="small-meta" id="media-videos-cost">&mdash;</div>
+          </div>
+        </div>
+      </div>
+      <div id="media-image-pick" class="mb-3 d-none">
+        <label class="form-label">Reference image for AI-generated images</label>
+        <div id="media-image-asset-picker" class="d-flex gap-2 flex-wrap">Loading…</div>
+      </div>
+      <div id="media-video-pick" class="mb-2 d-none">
+        <label class="form-label">Reference image for AI-generated videos</label>
+        <div id="media-video-asset-picker" class="d-flex gap-2 flex-wrap">Loading…</div>
+      </div>
+      <div id="media-cost-summary" class="alert alert-secondary py-2 mt-3 mb-0 small d-none"></div>
+    </div>
+
     <button id="schedule-btn" class="btn tj-grad-btn">
       <i class="fas fa-calendar-check me-2"></i> Schedule all
     </button>
@@ -99,6 +134,82 @@ async function loadConnections() {
 
 function escape(s) { return (s || '').replace(/</g, '&lt;'); }
 
+let mediaCatalogState = null;
+let mediaAssetsState = [];
+
+async function loadMediaCatalog() {
+  const [catalog, assetsResp] = await Promise.all([
+    TJ.api.get('/api/media/catalog'),
+    TJ.api.get('/api/media/assets'),
+  ]);
+  if (catalog) mediaCatalogState = catalog;
+  if (assetsResp) mediaAssetsState = assetsResp.assets || [];
+}
+
+function defaultModelFor(kind) {
+  const list = mediaCatalogState?.models?.[kind] || [];
+  return list.find(m => m.default) || list[0];
+}
+
+function renderAssetRadios(containerId, name) {
+  const el = document.getElementById(containerId);
+  if (!mediaAssetsState.length) {
+    el.innerHTML = `<div class="alert alert-warning small w-100 mb-0">No reference assets yet. <a href="/assets" target="_blank">Upload one first</a>.</div>`;
+    return;
+  }
+  el.innerHTML = mediaAssetsState.map((a, i) => `
+    <label class="d-flex align-items-center gap-2 px-2 py-1"
+           style="border:1px solid var(--g-border-soft); border-radius:8px; background:white; cursor:pointer;">
+      <input type="radio" name="${name}" class="form-check-input m-0" value="${a.id}" ${i === 0 ? 'checked' : ''}>
+      <img src="${a.file_url}" alt="${a.name}" style="width:36px;height:36px;object-fit:cover;border-radius:4px;">
+      <span class="small">${a.name}</span>
+      <span class="hl hl-muted">${a.kind}</span>
+    </label>
+  `).join('');
+}
+
+function updateMediaCost() {
+  if (!mediaCatalogState) return;
+  const genImg = document.getElementById('media-gen-images').checked;
+  const genVid = document.getElementById('media-gen-videos').checked;
+  const imgModel = defaultModelFor('image');
+  const vidModel = defaultModelFor('video');
+
+  const imgItems = lastItems.filter(i => i.kind === 'social_post' && i.image_prompt);
+  const vidItems = lastItems.filter(i => i.kind === 'social_post' && i.video_prompt);
+
+  document.getElementById('media-images-cost').textContent =
+    `${imgItems.length} item(s) want images · ${imgModel?.credits || 0} cr each · ${imgModel?.label || '—'}`;
+  document.getElementById('media-videos-cost').textContent =
+    `${vidItems.length} item(s) want videos · ${vidModel?.credits || 0} cr each · ${vidModel?.label || '—'}`;
+
+  document.getElementById('media-image-pick').classList.toggle('d-none', !(genImg && imgItems.length));
+  document.getElementById('media-video-pick').classList.toggle('d-none', !(genVid && vidItems.length));
+
+  const total = (genImg ? (imgItems.length * (imgModel?.credits || 0)) : 0)
+              + (genVid ? (vidItems.length * (vidModel?.credits || 0)) : 0);
+  const summary = document.getElementById('media-cost-summary');
+  if (total > 0) {
+    const bal = mediaCatalogState.balance;
+    summary.classList.remove('d-none');
+    summary.classList.toggle('alert-warning', bal < total);
+    summary.classList.toggle('alert-secondary', bal >= total);
+    summary.innerHTML = `Total media cost: <strong>${total} credits</strong> · Balance: ${bal}` +
+      (bal < total ? ` · <strong>Not enough — top up at <a href="/billing">/billing</a></strong>` : '');
+  } else {
+    summary.classList.add('d-none');
+  }
+}
+
+document.getElementById('media-gen-images').addEventListener('change', () => {
+  if (document.getElementById('media-gen-images').checked) renderAssetRadios('media-image-asset-picker', 'media-image-ref');
+  updateMediaCost();
+});
+document.getElementById('media-gen-videos').addEventListener('change', () => {
+  if (document.getElementById('media-gen-videos').checked) renderAssetRadios('media-video-asset-picker', 'media-video-ref');
+  updateMediaCost();
+});
+
 document.getElementById('ai-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   const form = e.target;
@@ -124,6 +235,10 @@ document.getElementById('ai-form').addEventListener('submit', async (e) => {
     const kindClass = item.kind === 'social_post' ? 'hl-purple' : 'hl-info';
     const card = document.createElement('div');
     card.className = 'mb-3';
+    const mediaHints = [];
+    if (item.image_prompt) mediaHints.push(`<div class="small text-muted mt-2"><i class="fas fa-image me-1"></i><strong>Image:</strong> <em>${escape(item.image_prompt)}</em></div>`);
+    if (item.video_prompt) mediaHints.push(`<div class="small text-muted mt-1"><i class="fas fa-film me-1"></i><strong>Video:</strong> <em>${escape(item.video_prompt)}</em></div>`);
+    if (item.suggested_asset_kind) mediaHints.push(`<div class="small mt-1"><span class="hl hl-muted">ref: ${item.suggested_asset_kind}</span></div>`);
     card.innerHTML = `
       <div style="background:#fafbfd;border:1px solid var(--g-border-soft);border-radius:12px;padding:1rem;">
         <div class="d-flex align-items-center mb-2">
@@ -132,18 +247,28 @@ document.getElementById('ai-form').addEventListener('submit', async (e) => {
         </div>
         ${item.subject ? `<div class="fw-semibold mb-1">${escape(item.subject)}</div>` : ''}
         <div class="small text-muted" style="white-space:pre-wrap;">${escape(item.content)}</div>
+        ${mediaHints.join('')}
       </div>`;
     list.appendChild(card);
   });
 
   const hasSocial = lastItems.some(i => i.kind === 'social_post');
   const hasEmail = lastItems.some(i => i.kind === 'email_blast');
+  const anyImagePrompts = lastItems.some(i => i.kind === 'social_post' && i.image_prompt);
+  const anyVideoPrompts = lastItems.some(i => i.kind === 'social_post' && i.video_prompt);
   document.getElementById('conn-section').classList.toggle('d-none', !hasSocial);
   document.getElementById('recipients-section').classList.toggle('d-none', !hasEmail);
+  document.getElementById('media-section').classList.toggle('d-none', !(anyImagePrompts || anyVideoPrompts));
   document.getElementById('ai-count').textContent =
     `${lastItems.length} item(s) — ${lastItems.filter(i => i.kind==='social_post').length} social, ${lastItems.filter(i => i.kind==='email_blast').length} email`;
   document.getElementById('ai-results').classList.remove('d-none');
   if (hasSocial) await loadConnections();
+  if (anyImagePrompts || anyVideoPrompts) {
+    await loadMediaCatalog();
+    document.getElementById('media-balance').innerHTML =
+      `Current credit balance: <strong>${mediaCatalogState?.balance ?? '—'}</strong>`;
+    updateMediaCost();
+  }
   document.getElementById('ai-results').scrollIntoView({ behavior: 'smooth', block: 'start' });
 });
 
@@ -152,15 +277,40 @@ document.getElementById('schedule-btn').addEventListener('click', async () => {
   const conn_ids = [...document.querySelectorAll('.conn-check:checked')].map(i => parseInt(i.value, 10));
   const recipients = document.getElementById('recipients').value
     .split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+
+  const genImg = document.getElementById('media-gen-images').checked;
+  const genVid = document.getElementById('media-gen-videos').checked;
+  const imgRef = document.querySelector('input[name="media-image-ref"]:checked')?.value;
+  const vidRef = document.querySelector('input[name="media-video-ref"]:checked')?.value;
+  if (genImg && !imgRef) { TJ.notify.warning('Pick a reference image for AI-generated images.'); return; }
+  if (genVid && !vidRef) { TJ.notify.warning('Pick a reference image for AI-generated videos.'); return; }
+
+  const payload = {
+    items: lastItems,
+    connection_ids: conn_ids,
+    recipients,
+    media: (genImg || genVid) ? {
+      generate_images: genImg,
+      generate_videos: genVid,
+      image_asset_id: imgRef ? parseInt(imgRef, 10) : null,
+      video_asset_id: vidRef ? parseInt(vidRef, 10) : null,
+    } : null,
+  };
+
   const btn = document.getElementById('schedule-btn');
   const restore = TJ.btnLoading(btn, 'Scheduling…');
-  const data = await TJ.api.post('/api/ai/schedule', {
-    items: lastItems, connection_ids: conn_ids, recipients,
-  }, {
-    progress: true, progressLabel: 'Saving campaign…', successMsg: 'Campaign scheduled',
+  const data = await TJ.api.post('/api/ai/schedule', payload, {
+    progress: true, progressLabel: 'Saving campaign + enqueueing media…',
   });
   restore();
-  if (data) setTimeout(() => { window.location.href = '/scheduled'; }, 800);
+  if (!data) return;
+  const bits = [];
+  bits.push(`${data.posts} post(s)`);
+  if (data.blasts) bits.push(`${data.blasts} blast(s)`);
+  if (data.image_jobs) bits.push(`${data.image_jobs} image gen(s)`);
+  if (data.video_jobs) bits.push(`${data.video_jobs} video gen(s)`);
+  TJ.notify.success(`Scheduled: ${bits.join(', ')}`);
+  setTimeout(() => { window.location.href = '/scheduled'; }, 800);
 });
 </script>
 {% endblock %}
