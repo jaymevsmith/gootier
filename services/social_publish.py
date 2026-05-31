@@ -1,3 +1,5 @@
+import asyncio
+import json
 from typing import Dict, List, Optional
 
 import httpx
@@ -55,6 +57,207 @@ async def publish_facebook_page(conn: SocialConnection, content: str,
         return {"success": False, "error": str(e), "platform": "facebook"}
 
 
+async def publish_instagram(conn: SocialConnection, content: str,
+                              image_url: Optional[str] = None,
+                              video_url: Optional[str] = None) -> Dict:
+    """Instagram Graph API — two-step container then publish.
+
+    Caption-only posts aren't supported by IG; either image_url or video_url
+    is required.
+    """
+    if not conn.page_id:
+        return {"success": False, "error": "Missing IG user id", "platform": "instagram"}
+    if not image_url and not video_url:
+        return {"success": False, "error": "Instagram requires an image or video", "platform": "instagram"}
+
+    params = {"access_token": conn.access_token}
+    try:
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            create_data = {"caption": content}
+            if video_url:
+                create_data["media_type"] = "REELS"
+                create_data["video_url"] = video_url
+            else:
+                create_data["image_url"] = image_url
+
+            container_resp = await client.post(
+                f"{GRAPH_API}/{conn.page_id}/media",
+                params=params, data=create_data,
+            )
+            container_resp.raise_for_status()
+            container_id = container_resp.json().get("id")
+            if not container_id:
+                return {"success": False, "error": "No container id", "platform": "instagram"}
+
+            # For video/reels, IG needs a moment to ingest. Poll the container status
+            # up to ~60s before publishing.
+            if video_url:
+                for _ in range(20):
+                    await asyncio.sleep(3.0)
+                    status_resp = await client.get(
+                        f"{GRAPH_API}/{container_id}",
+                        params={**params, "fields": "status_code"},
+                    )
+                    if status_resp.status_code >= 400:
+                        break
+                    if status_resp.json().get("status_code") == "FINISHED":
+                        break
+
+            publish_resp = await client.post(
+                f"{GRAPH_API}/{conn.page_id}/media_publish",
+                params=params, data={"creation_id": container_id},
+            )
+            publish_resp.raise_for_status()
+            return {
+                "success": True,
+                "post_id": publish_resp.json().get("id"),
+                "platform": "instagram",
+            }
+    except httpx.HTTPStatusError as e:
+        return {"success": False, "error": e.response.text, "platform": "instagram"}
+    except Exception as e:
+        return {"success": False, "error": str(e), "platform": "instagram"}
+
+
+async def publish_twitter(conn: SocialConnection, content: str,
+                            link_url: Optional[str] = None) -> Dict:
+    """Post a tweet via X API v2 (text only for MVP; media via v1.1 not wired yet)."""
+    text = content
+    if link_url:
+        text = f"{content}\n\n{link_url}".strip()
+    if len(text) > 280:
+        text = text[:277] + "…"
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(
+                "https://api.twitter.com/2/tweets",
+                headers={
+                    "Authorization": f"Bearer {conn.access_token}",
+                    "Content-Type": "application/json",
+                },
+                content=json.dumps({"text": text}),
+            )
+            resp.raise_for_status()
+            payload = resp.json().get("data") or {}
+            return {
+                "success": True,
+                "post_id": payload.get("id"),
+                "platform": "twitter",
+            }
+    except httpx.HTTPStatusError as e:
+        return {"success": False, "error": e.response.text, "platform": "twitter"}
+    except Exception as e:
+        return {"success": False, "error": str(e), "platform": "twitter"}
+
+
+async def publish_linkedin(conn: SocialConnection, content: str,
+                             link_url: Optional[str] = None,
+                             image_url: Optional[str] = None) -> Dict:
+    """Post to LinkedIn as the authenticated user via UGC Posts API.
+
+    For images, we register an upload, PUT the bytes from `image_url`, then
+    reference the resulting media URN in the post. Text+link works without
+    any media upload — that's the common path.
+    """
+    if not conn.page_id:
+        return {"success": False, "error": "Missing LinkedIn user URN", "platform": "linkedin"}
+    person_urn = f"urn:li:person:{conn.page_id}"
+    headers = {
+        "Authorization": f"Bearer {conn.access_token}",
+        "Content-Type": "application/json",
+        "X-Restli-Protocol-Version": "2.0.0",
+    }
+
+    text_parts = [content]
+    if link_url:
+        text_parts.append(link_url)
+    post_text = "\n\n".join(text_parts).strip()
+
+    body = {
+        "author": person_urn,
+        "lifecycleState": "PUBLISHED",
+        "specificContent": {
+            "com.linkedin.ugc.ShareContent": {
+                "shareCommentary": {"text": post_text},
+                "shareMediaCategory": "NONE",
+            }
+        },
+        "visibility": {"com.linkedin.ugc.MemberNetworkVisibility": "PUBLIC"},
+    }
+    if link_url and not image_url:
+        body["specificContent"]["com.linkedin.ugc.ShareContent"]["shareMediaCategory"] = "ARTICLE"
+        body["specificContent"]["com.linkedin.ugc.ShareContent"]["media"] = [{
+            "status": "READY",
+            "originalUrl": link_url,
+        }]
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(
+                "https://api.linkedin.com/v2/ugcPosts",
+                headers=headers,
+                content=json.dumps(body),
+            )
+            resp.raise_for_status()
+            return {
+                "success": True,
+                "post_id": resp.headers.get("x-restli-id") or "linkedin-post",
+                "platform": "linkedin",
+            }
+    except httpx.HTTPStatusError as e:
+        return {"success": False, "error": e.response.text, "platform": "linkedin"}
+    except Exception as e:
+        return {"success": False, "error": str(e), "platform": "linkedin"}
+
+
+async def publish_tiktok(conn: SocialConnection, content: str,
+                           video_url: Optional[str] = None) -> Dict:
+    """TikTok Content Posting API — direct video upload from URL (PULL_FROM_URL).
+
+    Requires the destination URL to be on a domain verified in the TikTok app.
+    Posts land in the user's inbox for them to publish from the app — that's
+    by design in TikTok's content-posting flow, not a Gootier limitation.
+    """
+    if not video_url:
+        return {"success": False, "error": "TikTok requires a video_url", "platform": "tiktok"}
+    headers = {
+        "Authorization": f"Bearer {conn.access_token}",
+        "Content-Type": "application/json; charset=UTF-8",
+    }
+    body = {
+        "post_info": {
+            "title": (content or "")[:150],
+            "privacy_level": "SELF_ONLY",   # required for unaudited apps
+            "disable_duet": False,
+            "disable_comment": False,
+            "disable_stitch": False,
+        },
+        "source_info": {
+            "source": "PULL_FROM_URL",
+            "video_url": video_url,
+        },
+    }
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            resp = await client.post(
+                "https://open.tiktokapis.com/v2/post/publish/inbox/video/init/",
+                headers=headers,
+                content=json.dumps(body),
+            )
+            resp.raise_for_status()
+            data = (resp.json().get("data") or {})
+            return {
+                "success": True,
+                "post_id": data.get("publish_id", "tiktok-inbox"),
+                "platform": "tiktok",
+                "note": "Sent to TikTok inbox — open the TikTok app to publish.",
+            }
+    except httpx.HTTPStatusError as e:
+        return {"success": False, "error": e.response.text, "platform": "tiktok"}
+    except Exception as e:
+        return {"success": False, "error": str(e), "platform": "tiktok"}
+
+
 async def publish_to_connections(connections: List[SocialConnection], content: str,
                                   link_url: Optional[str] = None,
                                   image_url: Optional[str] = None,
@@ -65,6 +268,18 @@ async def publish_to_connections(connections: List[SocialConnection], content: s
             results[conn.id] = await publish_facebook_page(
                 conn, content, link_url=link_url, image_url=image_url, video_url=video_url,
             )
+        elif conn.platform == "instagram":
+            results[conn.id] = await publish_instagram(
+                conn, content, image_url=image_url, video_url=video_url,
+            )
+        elif conn.platform == "twitter":
+            results[conn.id] = await publish_twitter(conn, content, link_url=link_url)
+        elif conn.platform == "linkedin":
+            results[conn.id] = await publish_linkedin(
+                conn, content, link_url=link_url, image_url=image_url,
+            )
+        elif conn.platform == "tiktok":
+            results[conn.id] = await publish_tiktok(conn, content, video_url=video_url)
         else:
             results[conn.id] = {"success": False, "error": f"Platform '{conn.platform}' not yet supported"}
     return results

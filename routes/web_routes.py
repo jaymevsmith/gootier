@@ -77,7 +77,18 @@ async def connections_page(
     items = db.query(SocialConnection).filter(
         SocialConnection.user_id == user.id, SocialConnection.is_active == True,  # noqa: E712
     ).all()
-    return templates.TemplateResponse(request, "connections.html", _ctx(user, connections=items))
+    # Tell the template which OAuth flows are configured so we can grey out
+    # the rest (with a hint pointing the admin at /admin/env).
+    from services.env_config import get_env
+    platform_status = {
+        "meta_configured":     bool(get_env("META_APP_ID")),
+        "twitter_configured":  bool(get_env("X_CLIENT_ID")),
+        "linkedin_configured": bool(get_env("LINKEDIN_CLIENT_ID")),
+        "tiktok_configured":   bool(get_env("TIKTOK_CLIENT_KEY")),
+    }
+    return templates.TemplateResponse(request, "connections.html", _ctx(
+        user, connections=items, platform_status=platform_status,
+    ))
 
 
 @router.get("/compose")

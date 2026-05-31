@@ -324,9 +324,21 @@ KNOWN_ENV_KEYS = [
     ("STRIPE_PRICE_SILVER",    "billing", False, False, "Stripe Price ID for the Silver tier."),
     ("STRIPE_PRICE_GOLD",      "billing", False, False, "Stripe Price ID for the Gold tier."),
 
-    ("META_APP_ID",            "social",  False, False, "Facebook/Meta developer app ID."),
+    ("META_APP_ID",            "social",  False, False, "Facebook/Meta developer app ID (used for Facebook + Instagram OAuth)."),
     ("META_APP_SECRET",        "social",  True,  False, "Facebook/Meta developer app secret."),
-    ("META_OAUTH_REDIRECT",    "social",  False, False, "OAuth redirect URI registered with Meta. Must match exactly."),
+    ("META_OAUTH_REDIRECT",    "social",  False, False, "Facebook OAuth redirect URI registered with Meta. Must match exactly."),
+
+    ("X_CLIENT_ID",            "social",  False, False, "X (Twitter) OAuth 2.0 client ID. Requires the paid Basic tier or higher for write access."),
+    ("X_CLIENT_SECRET",        "social",  True,  False, "X (Twitter) OAuth 2.0 client secret."),
+    ("X_OAUTH_REDIRECT",       "social",  False, False, "X OAuth redirect URI, e.g. https://yourhost/oauth/twitter/callback"),
+
+    ("LINKEDIN_CLIENT_ID",     "social",  False, False, "LinkedIn OAuth 2.0 client ID."),
+    ("LINKEDIN_CLIENT_SECRET", "social",  True,  False, "LinkedIn OAuth 2.0 client secret."),
+    ("LINKEDIN_OAUTH_REDIRECT","social",  False, False, "LinkedIn OAuth redirect URI, e.g. https://yourhost/oauth/linkedin/callback"),
+
+    ("TIKTOK_CLIENT_KEY",      "social",  False, False, "TikTok developer client key."),
+    ("TIKTOK_CLIENT_SECRET",   "social",  True,  False, "TikTok developer client secret."),
+    ("TIKTOK_OAUTH_REDIRECT",  "social",  False, False, "TikTok OAuth redirect URI, e.g. https://yourhost/oauth/tiktok/callback"),
 
     ("FAL_API_KEY",            "ai",      True,  False, "fal.ai API key powering image + video generation."),
 ]

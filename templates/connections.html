@@ -6,34 +6,78 @@
   <div>
     <div class="eyebrow">Channels</div>
     <h1>Connected accounts</h1>
-    <p class="lede">Grant Gootier permission to post to your social channels via OAuth.</p>
-  </div>
-  <div class="actions">
-    <a href="/oauth/facebook/start" class="btn tj-grad-btn"><i class="fab fa-facebook me-2"></i>Connect Facebook</a>
+    <p class="lede">Sign in to your social channels to grant Gootier permission to post on your behalf.</p>
   </div>
 </div>
 {% endblock %}
 
 {% block content %}
+{% set platform_meta = {
+  'facebook':  {'icon': 'fab fa-facebook',  'color': '#1877f2', 'label': 'Facebook Page'},
+  'instagram': {'icon': 'fab fa-instagram', 'color': '#E1306C', 'label': 'Instagram'},
+  'twitter':   {'icon': 'fab fa-x-twitter', 'color': '#000000', 'label': 'X (Twitter)'},
+  'linkedin':  {'icon': 'fab fa-linkedin',  'color': '#0A66C2', 'label': 'LinkedIn'},
+  'tiktok':    {'icon': 'fab fa-tiktok',    'color': '#000000', 'label': 'TikTok'},
+} %}
+
+<div class="row g-3 mb-4">
+  {% for p in [
+    ('facebook',  'meta_configured',     '/oauth/facebook/start', None),
+    ('instagram', 'meta_configured',     '/oauth/facebook/start', 'Connects together with Facebook (one Meta app).'),
+    ('twitter',   'twitter_configured',  '/oauth/twitter/start',  'Requires X API Basic tier ($200/mo) for write access.'),
+    ('linkedin',  'linkedin_configured', '/oauth/linkedin/start', None),
+    ('tiktok',    'tiktok_configured',   '/oauth/tiktok/start',   'TikTok posts land in the in-app inbox for the user to publish from the TikTok app.'),
+  ] %}
+    {% set platform = p[0] %}
+    {% set configured = platform_status.get(p[1]) %}
+    {% set start_url = p[2] %}
+    {% set note = p[3] %}
+    {% set meta = platform_meta[platform] %}
+  <div class="col-lg-4 col-md-6">
+    <div class="card-x h-100">
+      <div class="card-x-body">
+        <div class="d-flex align-items-center gap-3 mb-2">
+          <i class="{{ meta.icon }} fa-2x" style="color: {{ meta.color }};"></i>
+          <div class="flex-grow-1">
+            <div class="fw-semibold">{{ meta.label }}</div>
+            <div class="small-meta">
+              {% if configured %}Ready to connect{% else %}Not configured by admin{% endif %}
+            </div>
+          </div>
+        </div>
+        {% if note %}<div class="small text-muted mb-3">{{ note }}</div>{% endif %}
+        <a href="{{ start_url if configured else '#' }}"
+           class="btn {{ 'tj-grad-btn' if configured else 'btn-soft' }} w-100"
+           {% if not configured %}aria-disabled="true" tabindex="-1" style="pointer-events:none; opacity:.5;"{% endif %}>
+          <i class="fas fa-arrow-right-to-bracket me-2"></i>
+          {% if configured %}Sign in with {{ meta.label }}{% else %}Set credentials in /admin/env{% endif %}
+        </a>
+      </div>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+
 {% if connections %}
+<h5 class="mb-3 mt-4">Your connected accounts</h5>
 <div class="card-x">
   <table class="table-x">
     <thead>
       <tr>
         <th>Platform</th>
         <th>Account</th>
-        <th>Page ID</th>
+        <th>ID</th>
         <th>Connected</th>
         <th></th>
       </tr>
     </thead>
     <tbody>
       {% for c in connections %}
+        {% set meta = platform_meta.get(c.platform, {'icon': 'fas fa-link', 'color': '#666', 'label': c.platform}) %}
       <tr>
         <td>
           <span class="hl hl-info">
-            {% if c.platform == 'facebook' %}<i class="fab fa-facebook me-1"></i>{% endif %}
-            {{ c.platform }}
+            <i class="{{ meta.icon }} me-1" style="color: {{ meta.color }};"></i>{{ meta.label }}
           </span>
         </td>
         <td>{{ c.account_name }}</td>
@@ -53,25 +97,7 @@
 <div class="empty-state">
   <div class="empty-icon"><i class="fas fa-link"></i></div>
   <h5>No connections yet</h5>
-  <p>Click "Connect Facebook" to grant Gootier permission to post to your Pages. We'll handle the OAuth flow for you.</p>
-  <a href="/oauth/facebook/start" class="btn tj-grad-btn"><i class="fab fa-facebook me-2"></i>Connect Facebook</a>
-</div>
-
-<div class="mt-5">
-  <h6 class="text-muted small text-uppercase">Coming soon</h6>
-  <div class="row g-3 mt-1">
-    {% for p in [('instagram','Instagram','#E1306C'), ('x-twitter','X','#000000'), ('linkedin','LinkedIn','#0A66C2'), ('tiktok','TikTok','#000000')] %}
-    <div class="col-md-3 col-sm-6">
-      <div class="card-x" style="opacity:.7;">
-        <div class="card-x-body text-center">
-          <i class="fab fa-{{ p[0] }} fa-2x mb-2" style="color: {{ p[2] }};"></i>
-          <div class="fw-semibold">{{ p[1] }}</div>
-          <div class="small-meta">Coming soon</div>
-        </div>
-      </div>
-    </div>
-    {% endfor %}
-  </div>
+  <p>Pick a platform above and sign in &mdash; we&apos;ll handle the OAuth handshake. Your password never touches our server.</p>
 </div>
 {% endif %}
 {% endblock %}
