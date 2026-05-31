@@ -59,10 +59,11 @@
     </nav>
 
     <div class="sidebar-footer">
-      <button type="button" class="signout" id="theme-toggle"
-              aria-label="Toggle Aurora dark theme">
-        <i class="fas" id="theme-toggle-icon" aria-hidden="true"></i>
-        <span id="theme-toggle-label"></span>
+      {% set is_aurora = request.cookies.get('gootier_theme') == 'aurora' %}
+      <button type="button" class="signout theme-toggle-btn" id="theme-toggle"
+              aria-label="Switch to the {{ 'light' if is_aurora else 'Aurora dark' }} theme">
+        <i class="fas {{ 'fa-sun' if is_aurora else 'fa-moon' }} me-2"
+           id="theme-toggle-icon" aria-hidden="true"></i><span id="theme-toggle-label">{{ 'Light theme' if is_aurora else 'Aurora theme' }}</span>
       </button>
       <a href="/profile" class="user-card user-card-link" aria-label="View your profile">
         <div class="user-avatar" aria-hidden="true">{{ ((user.nickname[:1] if user.nickname else user.username[:1]) if user else '?')|upper }}</div>

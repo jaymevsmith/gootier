@@ -226,6 +226,20 @@ a:hover { color: var(--g-primary-2); text-decoration: underline; }
   border-radius: var(--g-radius-md);
 }
 .sidebar-footer .signout:hover { background: rgba(255,255,255,.04); color: #fff; text-decoration: none; }
+/* Reset user-agent <button> chrome so the theme toggle reads as a sidebar
+   nav row, not a default platform button (which lands as a stark white pill
+   on the dark sidebar). */
+.sidebar-footer button.signout,
+.sidebar-footer .theme-toggle-btn {
+  background: transparent;
+  border: none;
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  font-size: .85rem;
+  cursor: pointer;
+  appearance: none;
+}
 
 .app-main {
   flex: 1;
