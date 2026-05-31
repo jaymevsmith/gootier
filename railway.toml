@@ -15,6 +15,10 @@ dockerfilePath = "Dockerfile"
 # ${PORT} actually expands. Setting startCommand here would override the
 # Dockerfile and Railway's startCommand expansion isn't reliable.
 healthcheckPath = "/health"
-healthcheckTimeout = 30
+# 300s window — init_db runs migrations + seeds + an at-rest token re-encrypt
+# pass on every cold boot, and with multiple workers serialized through a
+# pg_advisory_lock the total startup time is roughly 2× the single-worker
+# init time. Anything under ~2 min isn't enough headroom on a cold Postgres.
+healthcheckTimeout = 300
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 5
