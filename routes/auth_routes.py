@@ -135,8 +135,13 @@ async def signup_submit(
     db.refresh(user)
     log_action(db, user, "SIGNUP", "User", str(user.id))
 
-    # Fire verification email (logs the link if SMTP isn't configured).
+    # Fire verification email + welcome email (logs the link if SMTP isn't configured).
     trigger_verification_email(db, user, _app_url(request))
+    try:
+        from services.onboarding import send_welcome_email
+        send_welcome_email(user)
+    except Exception:
+        pass  # welcome email is best-effort — never block signup on it
 
     token = create_access_token(user.id)
     response = RedirectResponse(url="/dashboard", status_code=303)

@@ -161,10 +161,25 @@ async def _refresh_recent_analytics() -> None:
         db.close()
 
 
+def _process_onboarding_drip() -> None:
+    """Run the onboarding email drip — walks users in their first 30 days,
+    sends the next due step if its precondition is met."""
+    from services.onboarding import process_drip
+    db = SessionLocal()
+    try:
+        summary = process_drip(db)
+        if summary["sent"]:
+            logger.info("Onboarding drip: sent %d, skipped %d (scanned %d users)",
+                        len(summary["sent"]), summary["skipped"], summary["users_scanned"])
+    finally:
+        db.close()
+
+
 async def scheduler_loop() -> None:
     logger.info("Gootier scheduler loop starting")
     tick = 0
-    ANALYTICS_EVERY_TICKS = 10  # 10 minutes when INTERVAL_SECONDS=60
+    ANALYTICS_EVERY_TICKS = 10        # 10 min when INTERVAL_SECONDS=60
+    ONBOARDING_EVERY_TICKS = 60 * 12  # 12 hours (the daily-ish cadence is fine — preconditions are idempotent)
     while True:
         tick += 1
         try:
@@ -172,6 +187,8 @@ async def scheduler_loop() -> None:
             _process_due_blasts()
             if tick % ANALYTICS_EVERY_TICKS == 0:
                 await _refresh_recent_analytics()
+            if tick % ONBOARDING_EVERY_TICKS == 0:
+                _process_onboarding_drip()
         except Exception as e:
             logger.exception("Scheduler tick failed: %s", e)
         await asyncio.sleep(INTERVAL_SECONDS)
