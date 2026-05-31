@@ -370,64 +370,67 @@ def _column_exists(conn, table: str, column: str) -> bool:
     return column in {c["name"] for c in inspector.get_columns(table)}
 
 
+def _safe_add_column(conn, table: str, column: str, ddl_type: str) -> None:
+    """Race-safe `ALTER TABLE table ADD COLUMN column ddl_type`.
+
+    Postgres 9.6+ supports `ADD COLUMN IF NOT EXISTS` — use it directly.
+    SQLite (which doesn't) is single-process so the existence check is safe.
+    """
+    if conn.dialect.name == "postgresql":
+        conn.execute(text(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {ddl_type}"))
+    else:
+        if not _column_exists(conn, table, column):
+            conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {ddl_type}"))
+
+
 def _upgrade_users(conn):
-    if not _column_exists(conn, "users", "stripe_customer_id"):
-        conn.execute(text("ALTER TABLE users ADD COLUMN stripe_customer_id VARCHAR"))
-    if not _column_exists(conn, "users", "subscribed_until"):
-        conn.execute(text("ALTER TABLE users ADD COLUMN subscribed_until DATETIME"))
-    if not _column_exists(conn, "users", "reset_token"):
-        conn.execute(text("ALTER TABLE users ADD COLUMN reset_token VARCHAR"))
-    if not _column_exists(conn, "users", "reset_token_expires_at"):
-        conn.execute(text("ALTER TABLE users ADD COLUMN reset_token_expires_at DATETIME"))
-    if not _column_exists(conn, "users", "verify_token"):
-        conn.execute(text("ALTER TABLE users ADD COLUMN verify_token VARCHAR"))
-    if not _column_exists(conn, "users", "verify_token_expires_at"):
-        conn.execute(text("ALTER TABLE users ADD COLUMN verify_token_expires_at DATETIME"))
+    _safe_add_column(conn, "users", "stripe_customer_id",        "VARCHAR")
+    _safe_add_column(conn, "users", "subscribed_until",          "TIMESTAMP")
+    _safe_add_column(conn, "users", "reset_token",               "VARCHAR")
+    _safe_add_column(conn, "users", "reset_token_expires_at",    "TIMESTAMP")
+    _safe_add_column(conn, "users", "verify_token",              "VARCHAR")
+    _safe_add_column(conn, "users", "verify_token_expires_at",   "TIMESTAMP")
 
 
 def _upgrade_social_connections(conn):
-    if not _column_exists(conn, "social_connections", "refresh_token"):
-        conn.execute(text("ALTER TABLE social_connections ADD COLUMN refresh_token TEXT"))
+    _safe_add_column(conn, "social_connections", "refresh_token", "TEXT")
 
 
 def _upgrade_media(conn):
-    """Future-proof column adds on media tables. The CREATE happens via
-    Base.metadata.create_all; this is for additive schema changes."""
-    if not _column_exists(conn, "social_posts", "video_url"):
-        conn.execute(text("ALTER TABLE social_posts ADD COLUMN video_url VARCHAR"))
-    if not _column_exists(conn, "social_posts", "image_job_id"):
-        conn.execute(text("ALTER TABLE social_posts ADD COLUMN image_job_id INTEGER"))
-    if not _column_exists(conn, "social_posts", "video_job_id"):
-        conn.execute(text("ALTER TABLE social_posts ADD COLUMN video_job_id INTEGER"))
-    if not _column_exists(conn, "media_jobs", "webhook_token"):
-        conn.execute(text("ALTER TABLE media_jobs ADD COLUMN webhook_token VARCHAR"))
-    if not _column_exists(conn, "social_posts", "analytics_json"):
-        conn.execute(text("ALTER TABLE social_posts ADD COLUMN analytics_json TEXT"))
-    if not _column_exists(conn, "social_posts", "analytics_fetched_at"):
-        conn.execute(text("ALTER TABLE social_posts ADD COLUMN analytics_fetched_at DATETIME"))
+    _safe_add_column(conn, "social_posts", "video_url",            "VARCHAR")
+    _safe_add_column(conn, "social_posts", "image_job_id",         "INTEGER")
+    _safe_add_column(conn, "social_posts", "video_job_id",         "INTEGER")
+    _safe_add_column(conn, "media_jobs",   "webhook_token",        "VARCHAR")
+    _safe_add_column(conn, "social_posts", "analytics_json",       "TEXT")
+    _safe_add_column(conn, "social_posts", "analytics_fetched_at", "TIMESTAMP")
 
 
 def _seed_tier_configs(db) -> None:
+    from sqlalchemy.exc import IntegrityError
     for tier, perms in _DEFAULT_TIER_PERMS.items():
-        existing = db.query(TierConfig).filter(TierConfig.tier == tier).first()
         quotas = _DEFAULT_TIER_QUOTAS[tier]
-        if existing is None:
-            db.add(TierConfig(
-                tier=tier,
-                perms_json=json.dumps(perms),
-                quotas_json=json.dumps(quotas),
-            ))
-        else:
-            current = existing.perms_dict()
-            for key in _FORCE_OVERWRITE_KEYS:
-                if key in perms:
-                    current[key] = perms[key]
-            for key, value in perms.items():
-                current.setdefault(key, value)
-            existing.perms_json = json.dumps(current)
-            if not existing.quotas_json or existing.quotas_json == "{}":
-                existing.quotas_json = json.dumps(quotas)
-    db.commit()
+        try:
+            existing = db.query(TierConfig).filter(TierConfig.tier == tier).first()
+            if existing is None:
+                db.add(TierConfig(
+                    tier=tier,
+                    perms_json=json.dumps(perms),
+                    quotas_json=json.dumps(quotas),
+                ))
+            else:
+                current = existing.perms_dict()
+                for key in _FORCE_OVERWRITE_KEYS:
+                    if key in perms:
+                        current[key] = perms[key]
+                for key, value in perms.items():
+                    current.setdefault(key, value)
+                existing.perms_json = json.dumps(current)
+                if not existing.quotas_json or existing.quotas_json == "{}":
+                    existing.quotas_json = json.dumps(quotas)
+            db.commit()
+        except IntegrityError:
+            db.rollback()
+            continue
 
 
 def _seed_env_configs(db) -> None:
@@ -473,6 +476,7 @@ def _seed_env_configs(db) -> None:
 
 
 def _seed_role_configs(db) -> None:
+    from sqlalchemy.exc import IntegrityError
     defaults = {
         "admin":      {"marketing.view": True, "marketing.email_blast": True, "marketing.social_post": True, "marketing.ai_generate": True, "admin.view": True},
         "marketing":  {"marketing.view": True, "marketing.email_blast": True, "marketing.social_post": True, "marketing.ai_generate": True},
@@ -481,53 +485,54 @@ def _seed_role_configs(db) -> None:
         "client":     {},
     }
     for role, perms in defaults.items():
-        existing = db.query(RoleConfig).filter(RoleConfig.role == role).first()
-        if existing is None:
-            db.add(RoleConfig(role=role, perms_json=json.dumps(perms)))
-        else:
-            current = existing.perms_dict()
-            for k, v in perms.items():
-                current.setdefault(k, v)
-            existing.perms_json = json.dumps(current)
-    db.commit()
+        try:
+            existing = db.query(RoleConfig).filter(RoleConfig.role == role).first()
+            if existing is None:
+                db.add(RoleConfig(role=role, perms_json=json.dumps(perms)))
+            else:
+                current = existing.perms_dict()
+                for k, v in perms.items():
+                    current.setdefault(k, v)
+                existing.perms_json = json.dumps(current)
+            db.commit()
+        except IntegrityError:
+            db.rollback()
+            continue
 
 
 def init_db() -> None:
-    """Migrations + seeds. Race-safe across multiple gunicorn workers via a
-    Postgres advisory lock — without it, two workers both run ALTER TABLE
-    ADD COLUMN and the loser crashes. SQLite is single-process so the lock
-    is a no-op there.
+    """Race-safe migrations + seeds.
+
+    The advisory-lock approach I tried earlier hung Railway healthchecks for
+    reasons I couldn't pin down without dashboard access, so we go simpler:
+    every individual step is idempotent on its own.
+
+      * `Base.metadata.create_all` is already idempotent (CREATE TABLE IF NOT
+        EXISTS under the hood).
+      * `_safe_add_column` uses Postgres's native `ADD COLUMN IF NOT EXISTS`,
+        which is safe to run concurrently.
+      * Each seed wraps its per-row insert in try/except IntegrityError so a
+        worker that loses a unique-key race just rolls back its insert and
+        continues — the row exists, which is the post-condition we wanted.
     """
-    is_postgres = engine.dialect.name == "postgresql"
-    LOCK_ID = 4242  # arbitrary app-wide constant
-
-    def _do_init():
-        Base.metadata.create_all(bind=engine)
-        with engine.begin() as conn:
-            _upgrade_users(conn)
-            _upgrade_social_connections(conn)
-            _upgrade_media(conn)
-        from database import SessionLocal
-        db = SessionLocal()
-        try:
-            _seed_tier_configs(db)
-            _seed_role_configs(db)
-            _seed_env_configs(db)
-            _encrypt_existing_tokens(db)
-        finally:
-            db.close()
-
-    if is_postgres:
-        # pg_advisory_lock blocks until acquired; the second worker waits for
-        # the first to finish, then runs through everything as no-ops.
-        with engine.begin() as conn:
-            conn.execute(text(f"SELECT pg_advisory_lock({LOCK_ID})"))
-            try:
-                _do_init()
-            finally:
-                conn.execute(text(f"SELECT pg_advisory_unlock({LOCK_ID})"))
-    else:
-        _do_init()
+    print("[init_db] starting", flush=True)
+    Base.metadata.create_all(bind=engine)
+    print("[init_db] create_all done", flush=True)
+    with engine.begin() as conn:
+        _upgrade_users(conn)
+        _upgrade_social_connections(conn)
+        _upgrade_media(conn)
+    print("[init_db] migrations done", flush=True)
+    from database import SessionLocal
+    db = SessionLocal()
+    try:
+        _seed_tier_configs(db)
+        _seed_role_configs(db)
+        _seed_env_configs(db)
+        _encrypt_existing_tokens(db)
+    finally:
+        db.close()
+    print("[init_db] complete", flush=True)
 
 
 def _encrypt_existing_tokens(db) -> None:
