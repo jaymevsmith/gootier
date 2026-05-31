@@ -165,15 +165,83 @@ async def submit_job(endpoint: str, payload: dict) -> str:
     return handler.request_id
 
 
-async def get_job_status(endpoint: str, request_id: str) -> dict:
-    """Return current status snapshot. fal-client returns either a Queued/InProgress/Completed object."""
+async def fetch_status(endpoint: str, request_id: str):
+    """Return current status object (InQueue / InProgress / Completed). Raises on transport errors."""
     _sync_fal_key()
     import fal_client
     return await fal_client.status_async(endpoint, request_id, with_logs=False)
 
 
-async def get_job_result(endpoint: str, request_id: str) -> dict:
+async def fetch_result(endpoint: str, request_id: str) -> dict:
     """Fetch the final result payload for a completed job."""
     _sync_fal_key()
     import fal_client
     return await fal_client.result_async(endpoint, request_id)
+
+
+def _status_phase(status_obj) -> str:
+    """Map fal-client status objects to our four phases: queued | running | done | failed."""
+    name = type(status_obj).__name__
+    if name == "Completed":
+        return "done"
+    if name == "InProgress":
+        return "running"
+    if name == "InQueue":
+        return "queued"
+    return "running"  # unknown → assume still working
+
+
+# ---------------------------------------------------------------------------
+# Image generation
+# ---------------------------------------------------------------------------
+
+def build_image_payload(model: dict, prompt: str, ref_urls: list,
+                          aspect_ratio: str = "auto",
+                          resolution: str = "1K",
+                          num_images: int = 1) -> dict:
+    """Construct the fal payload for an image-gen model. Schema differs per model:
+       - Gemini 3.x flash/pro `image_urls` array (required) for the /edit endpoint
+       - Flux 1.1 Pro Ultra `image_url` singular (optional, treated as style prompt)
+    """
+    endpoint = model["endpoint"]
+    if "gemini-3" in endpoint and endpoint.endswith("/edit"):
+        if not ref_urls:
+            raise ValueError("Nano-Banana edit endpoints require at least one reference image_urls entry.")
+        return {
+            "prompt": prompt,
+            "image_urls": ref_urls,
+            "aspect_ratio": aspect_ratio or "auto",
+            "resolution": resolution or "1K",
+            "num_images": num_images,
+            "output_format": "png",
+            "limit_generations": True,
+        }
+    if "flux-pro/v1.1-ultra" in endpoint:
+        payload = {
+            "prompt": prompt,
+            "aspect_ratio": aspect_ratio if aspect_ratio and aspect_ratio != "auto" else "16:9",
+            "num_images": num_images,
+            "output_format": "jpeg",
+        }
+        # Flux Pro Ultra accepts a single optional `image_url` for style prompting.
+        if ref_urls:
+            payload["image_url"] = ref_urls[0]
+            payload["image_prompt_strength"] = 0.45
+        return payload
+    raise ValueError(f"No payload builder configured for endpoint: {endpoint}")
+
+
+def extract_first_image_url(result: dict) -> str:
+    """Both Gemini and Flux return `images: [{url, ...}, ...]`. Pull the first URL."""
+    images = (result or {}).get("images") or []
+    if not images:
+        raise ValueError("Result payload contained no images")
+    first = images[0]
+    if isinstance(first, str):
+        return first
+    if isinstance(first, dict):
+        url = first.get("url") or first.get("image_url")
+        if not url:
+            raise ValueError(f"Image entry missing url: {first}")
+        return url
+    raise ValueError(f"Unrecognised image entry shape: {type(first)}")

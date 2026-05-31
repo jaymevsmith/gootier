@@ -52,7 +52,13 @@
 
           <div class="row g-3 mb-3">
             <div class="col-md-6">
-              <label class="form-label">Image URL (optional)</label>
+              <label class="form-label d-flex align-items-center">
+                <span>Image URL (optional)</span>
+                <button type="button" class="btn btn-sm btn-soft ms-auto" id="generate-image-btn"
+                        data-target-input="image_url">
+                  <i class="fas fa-wand-magic-sparkles me-1"></i> Generate
+                </button>
+              </label>
               <input class="form-control" name="image_url" type="url" placeholder="https://…">
             </div>
             <div class="col-md-6">
@@ -101,6 +107,103 @@
   </div>
 </div>
 {% endif %}
+
+<!-- =========================================================
+     Generate-image modal (reusable; triggered by buttons with
+     data-target-input pointing at the form field to fill).
+     ========================================================= -->
+<div class="modal fade" id="img-gen-modal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered modal-lg">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title"><i class="fas fa-wand-magic-sparkles me-2 text-muted"></i>Generate image</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+
+        <!-- STEP 1: form -->
+        <div id="img-step-form">
+          <div class="row g-3 mb-3">
+            <div class="col-md-7">
+              <label class="form-label">Model</label>
+              <select id="img-model" class="form-select"></select>
+            </div>
+            <div class="col-md-3">
+              <label class="form-label">Aspect</label>
+              <select id="img-aspect" class="form-select">
+                <option value="auto">Auto</option>
+                <option value="1:1">1:1 square</option>
+                <option value="9:16">9:16 vertical</option>
+                <option value="16:9">16:9 wide</option>
+                <option value="4:5">4:5 portrait</option>
+              </select>
+            </div>
+            <div class="col-md-2">
+              <label class="form-label">Quality</label>
+              <select id="img-resolution" class="form-select">
+                <option value="1K">1K</option>
+                <option value="2K">2K</option>
+                <option value="0.5K">0.5K</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="mb-3">
+            <label class="form-label d-flex align-items-center">
+              <span>Reference assets <span class="text-muted small">(character consistency)</span></span>
+              <a href="/assets" target="_blank" class="ms-auto small">Manage library &nearr;</a>
+            </label>
+            <div id="img-asset-picker" class="d-flex gap-2 flex-wrap"
+                 style="min-height:64px; padding:.5rem; background:#fafbfd; border:1px dashed var(--g-border); border-radius:var(--g-radius-md);">
+              <span class="text-muted small m-2">Loading your library…</span>
+            </div>
+          </div>
+
+          <div class="mb-1">
+            <label class="form-label">Scene prompt</label>
+            <textarea id="img-prompt" class="form-control" rows="4"
+                      placeholder="e.g. Bean the mascot holding the new latte bottle, sunlit park backdrop, soft afternoon light"></textarea>
+          </div>
+          <div class="small-meta mt-1" id="img-cost-line">&nbsp;</div>
+        </div>
+
+        <!-- STEP 2: generating spinner -->
+        <div id="img-step-running" class="text-center d-none py-4">
+          <div class="spinner-border text-primary mb-3" role="status"></div>
+          <div class="fw-semibold" id="img-running-label">Submitting to fal…</div>
+          <div class="small text-muted mt-1">Most images finish in 5-15 seconds.</div>
+        </div>
+
+        <!-- STEP 3: result -->
+        <div id="img-step-result" class="d-none">
+          <div class="text-center mb-3">
+            <img id="img-result-preview" alt="Generated image"
+                 style="max-width:100%; max-height:420px; border-radius:var(--g-radius-md); border:1px solid var(--g-border-soft);">
+          </div>
+          <div class="small-meta text-center" id="img-result-meta"></div>
+        </div>
+
+        <!-- STEP 4: error -->
+        <div id="img-step-error" class="d-none">
+          <div class="alert alert-danger mb-0" id="img-error-msg"></div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-soft" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" class="btn btn-soft d-none" id="img-regenerate-btn">
+          <i class="fas fa-rotate-right me-1"></i> Regenerate
+        </button>
+        <button type="button" class="btn tj-grad-btn d-none" id="img-use-btn">
+          <i class="fas fa-check me-1"></i> Use this image
+        </button>
+        <button type="button" class="btn tj-grad-btn" id="img-submit-btn">
+          <i class="fas fa-wand-magic-sparkles me-1"></i> Generate
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
 {% endblock %}
 
 {% block scripts %}
@@ -145,5 +248,177 @@ form?.addEventListener('submit', async (e) => {
   restore();
   if (data) form.reset();
 });
+
+/* =================================================================
+   Image-generation modal
+   ================================================================= */
+const imgModalEl = document.getElementById('img-gen-modal');
+const imgModal = imgModalEl ? new bootstrap.Modal(imgModalEl) : null;
+const imgStepForm    = document.getElementById('img-step-form');
+const imgStepRunning = document.getElementById('img-step-running');
+const imgStepResult  = document.getElementById('img-step-result');
+const imgStepError   = document.getElementById('img-step-error');
+const imgSubmitBtn    = document.getElementById('img-submit-btn');
+const imgRegenBtn     = document.getElementById('img-regenerate-btn');
+const imgUseBtn       = document.getElementById('img-use-btn');
+const imgModelSel    = document.getElementById('img-model');
+const imgAssetPicker = document.getElementById('img-asset-picker');
+const imgCostLine    = document.getElementById('img-cost-line');
+const imgRunningLabel = document.getElementById('img-running-label');
+const imgResultPreview = document.getElementById('img-result-preview');
+const imgResultMeta    = document.getElementById('img-result-meta');
+const imgErrorMsg      = document.getElementById('img-error-msg');
+
+let imgCatalogState = null;
+let imgAssetsState = [];
+let imgTargetInputName = 'image_url';
+let imgCurrentResultUrl = null;
+let imgPollTimer = null;
+
+function imgShowStep(name) {
+  for (const [n, el] of Object.entries({
+    form: imgStepForm, running: imgStepRunning, result: imgStepResult, error: imgStepError,
+  })) {
+    el?.classList.toggle('d-none', n !== name);
+  }
+  imgSubmitBtn?.classList.toggle('d-none', name !== 'form');
+  imgRegenBtn?.classList.toggle('d-none', name === 'form' || name === 'running');
+  imgUseBtn?.classList.toggle('d-none', name !== 'result');
+}
+
+function imgSelectedModel() {
+  const key = imgModelSel.value;
+  return (imgCatalogState?.models?.image || []).find(m => m.key === key);
+}
+
+function imgUpdateCostLine() {
+  const m = imgSelectedModel();
+  if (!m || !imgCatalogState) { imgCostLine.textContent = ''; return; }
+  const bal = imgCatalogState.balance;
+  const enough = bal >= m.credits;
+  imgCostLine.innerHTML = `Cost: <strong>${m.credits} credits</strong> &middot; Balance: ${bal}` +
+    (enough ? '' : ' &middot; <span class="text-warning">Not enough credits</span>');
+  imgSubmitBtn.disabled = !enough;
+}
+
+function imgRenderAssetPicker() {
+  const m = imgSelectedModel();
+  const requiresRef = m?.supports_reference && m.key.startsWith('nano-banana');
+  if (!imgAssetsState.length) {
+    imgAssetPicker.innerHTML = requiresRef
+      ? `<div class="alert alert-warning small w-100 mb-0">This model uses your library as character reference. <a href="/assets" target="_blank">Upload an asset first</a>.</div>`
+      : `<span class="text-muted small m-2">No reference assets needed for this model. <a href="/assets" target="_blank">Library</a>.</span>`;
+    return;
+  }
+  imgAssetPicker.innerHTML = imgAssetsState.map(a => `
+    <label class="d-flex align-items-center gap-2 px-2 py-1"
+           style="border:1px solid var(--g-border-soft); border-radius:8px; background:white; cursor:pointer;">
+      <input type="checkbox" class="form-check-input m-0 img-ref-check" value="${a.id}">
+      <img src="${a.file_url}" alt="${a.name}" style="width:36px;height:36px;object-fit:cover;border-radius:4px;">
+      <span class="small">${a.name}</span>
+      <span class="hl hl-muted">${a.kind}</span>
+    </label>
+  `).join('');
+}
+
+async function imgOpenModal(targetInputName) {
+  imgTargetInputName = targetInputName || 'image_url';
+  imgCurrentResultUrl = null;
+  imgShowStep('form');
+  document.getElementById('img-prompt').value = '';
+
+  // Fetch catalog + assets in parallel
+  const [catalog, assetsResp] = await Promise.all([
+    TJ.api.get('/api/media/catalog'),
+    TJ.api.get('/api/media/assets'),
+  ]);
+  if (!catalog || !assetsResp) return;
+  imgCatalogState = catalog;
+  imgAssetsState = assetsResp.assets || [];
+
+  imgModelSel.innerHTML = (catalog.models.image || []).map(m =>
+    `<option value="${m.key}" ${m.default ? 'selected' : ''}>${m.label} — ${m.credits} cr</option>`
+  ).join('');
+  imgRenderAssetPicker();
+  imgUpdateCostLine();
+  imgModal.show();
+}
+
+imgModelSel?.addEventListener('change', () => { imgRenderAssetPicker(); imgUpdateCostLine(); });
+
+async function imgSubmitGeneration() {
+  const m = imgSelectedModel();
+  if (!m) return;
+  const prompt = document.getElementById('img-prompt').value.trim();
+  if (prompt.length < 3) {
+    TJ.notify.warning('Write a prompt of at least a few words.');
+    return;
+  }
+  const assetIds = [...document.querySelectorAll('.img-ref-check:checked')].map(i => parseInt(i.value, 10));
+  const requiresRef = m.supports_reference && m.key.startsWith('nano-banana');
+  if (requiresRef && assetIds.length === 0) {
+    TJ.notify.warning('Pick at least one reference asset for the chosen model.');
+    return;
+  }
+
+  imgShowStep('running');
+  imgRunningLabel.textContent = `Submitting to fal (${m.label})…`;
+
+  const data = await TJ.api.post('/api/media/jobs/image', {
+    prompt,
+    model_key: m.key,
+    asset_ids: assetIds,
+    aspect_ratio: document.getElementById('img-aspect').value,
+    resolution: document.getElementById('img-resolution').value,
+  });
+  if (!data) { imgShowStep('form'); return; }
+  imgRunningLabel.textContent = `Generating (${m.label})…`;
+  imgPollJob(data.id, 0);
+}
+
+function imgPollJob(jobId, attempt) {
+  clearTimeout(imgPollTimer);
+  const wait = attempt === 0 ? 1500 : (attempt < 10 ? 2000 : (attempt < 25 ? 4000 : 6000));
+  imgPollTimer = setTimeout(async () => {
+    const job = await TJ.api.get(`/api/media/jobs/${jobId}`);
+    if (!job) return;
+    if (job.status === 'done') {
+      imgCurrentResultUrl = job.result_url;
+      imgResultPreview.src = job.result_url;
+      imgResultMeta.textContent = `Took ${job.completed_at ? Math.round((new Date(job.completed_at) - new Date(job.created_at)) / 1000) : '–'}s · ${job.cost_credits} credits`;
+      imgShowStep('result');
+      try {
+        const refreshed = await TJ.api.get('/api/media/catalog');
+        if (refreshed) imgCatalogState = refreshed;
+      } catch (_) {}
+      return;
+    }
+    if (job.status === 'failed') {
+      imgErrorMsg.textContent = job.error || 'Generation failed. Credits were refunded.';
+      imgShowStep('error');
+      return;
+    }
+    imgPollJob(jobId, attempt + 1);
+  }, wait);
+}
+
+imgSubmitBtn?.addEventListener('click', imgSubmitGeneration);
+imgRegenBtn?.addEventListener('click', () => { imgShowStep('form'); });
+imgUseBtn?.addEventListener('click', () => {
+  if (!imgCurrentResultUrl) return;
+  const target = document.querySelector(`#compose-form [name="${imgTargetInputName}"]`);
+  if (target) {
+    target.value = imgCurrentResultUrl;
+    target.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+  imgModal.hide();
+  TJ.notify.success('Image attached to the post.');
+});
+
+document.querySelectorAll('[data-target-input]').forEach(btn => {
+  btn.addEventListener('click', () => imgOpenModal(btn.dataset.targetInput));
+});
+
+imgModalEl?.addEventListener('hidden.bs.modal', () => { clearTimeout(imgPollTimer); });
 </script>
 {% endblock %}
