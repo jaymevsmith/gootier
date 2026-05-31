@@ -45,7 +45,10 @@ async def _publish_post(db, post: SocialPost) -> None:
         return
 
     results = await publish_to_connections(
-        connections, post.content, post.link_url, post.image_url,
+        connections, post.content,
+        link_url=post.link_url,
+        image_url=post.image_url,
+        video_url=post.video_url,
     )
     successes = sum(1 for r in results.values() if r.get("success"))
     if successes == len(connections):

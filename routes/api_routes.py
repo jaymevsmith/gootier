@@ -28,6 +28,7 @@ class SocialPostCreate(BaseModel):
     content: str = Field(..., min_length=1, max_length=5000)
     connection_ids: List[int]
     image_url: Optional[str] = None
+    video_url: Optional[str] = None
     link_url: Optional[str] = None
     scheduled_at: Optional[datetime] = None
 
@@ -210,6 +211,7 @@ async def create_post(
         user_id=user.id,
         content=payload.content,
         image_url=payload.image_url,
+        video_url=payload.video_url,
         link_url=payload.link_url,
         connection_ids=",".join(str(c.id) for c in owned),
         scheduled_at=payload.scheduled_at,
@@ -221,7 +223,10 @@ async def create_post(
 
     if not payload.scheduled_at:
         results = await publish_to_connections(
-            owned, post.content, post.link_url, post.image_url,
+            owned, post.content,
+            link_url=post.link_url,
+            image_url=post.image_url,
+            video_url=post.video_url,
         )
         successes = sum(1 for r in results.values() if r.get("success"))
         post.status = ("published" if successes == len(owned)

@@ -17,7 +17,8 @@ from models import MediaAsset, MediaJob, User, log_action
 from services.credits import balance as credits_balance, grant as credits_grant, spend as credits_spend
 from services.media import (
     ACCEPTED_IMAGE_TYPES, MAX_UPLOAD_BYTES,
-    MEDIA_MODEL_CATALOG, build_image_payload, extract_first_image_url,
+    MEDIA_MODEL_CATALOG, build_image_payload, build_video_payload,
+    extract_first_image_url, extract_video_url,
     fetch_result, fetch_status, resolve_model, submit_job,
     upload_bytes, _status_phase,
 )
@@ -342,9 +343,12 @@ async def get_media_job(
     if phase == "done":
         try:
             result = await fetch_result(job.model_endpoint, job.fal_request_id)
-            url = extract_first_image_url(result)
+            if job.kind == "video":
+                url = extract_video_url(result)
+            else:
+                url = extract_first_image_url(result)
             job.result_url = url
-            job.thumbnail_url = url  # fal images are already CDN-served, no separate thumb
+            job.thumbnail_url = url
             job.status = "done"
             job.completed_at = datetime.utcnow()
             db.commit()
@@ -354,6 +358,83 @@ async def get_media_job(
     elif phase == "running" and job.status != "running":
         job.status = "running"
         db.commit()
+
+    db.refresh(job)
+    return _serialize_job(job)
+
+
+# --------------------------------------------------------------------------- #
+# Video generation
+# --------------------------------------------------------------------------- #
+
+class VideoJobCreate(BaseModel):
+    prompt: str = Field(..., min_length=3, max_length=4000)
+    model_key: Optional[str] = None
+    asset_id: int  # video models take a single image_url
+    duration_seconds: int = 5
+    aspect_ratio: str = "auto"
+    resolution: str = "720p"
+    generate_audio: bool = True
+
+
+@router.post("/api/media/jobs/video")
+async def create_video_job(
+    payload: VideoJobCreate,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    model = resolve_model("video", payload.model_key)
+
+    asset = db.query(MediaAsset).filter(
+        MediaAsset.id == payload.asset_id,
+        MediaAsset.user_id == user.id,
+        MediaAsset.is_active == True,  # noqa: E712
+    ).first()
+    if not asset:
+        raise HTTPException(status_code=400, detail="Reference asset not found or not yours.")
+
+    cost = int(model["credits"])
+    credits_spend(db, user, cost, reason="video_gen", detail=f"model={model['key']}")
+
+    job = MediaJob(
+        user_id=user.id,
+        kind="video",
+        provider="fal",
+        model_key=model["key"],
+        model_endpoint=model["endpoint"],
+        prompt=payload.prompt,
+        ref_asset_ids=str(asset.id),
+        aspect_ratio=payload.aspect_ratio,
+        duration_seconds=payload.duration_seconds,
+        status="queued",
+        cost_credits=cost,
+    )
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+
+    try:
+        fal_payload = build_video_payload(
+            model,
+            prompt=payload.prompt,
+            ref_url=asset.file_url,
+            duration_seconds=payload.duration_seconds,
+            aspect_ratio=payload.aspect_ratio,
+            resolution=payload.resolution,
+            generate_audio=payload.generate_audio,
+        )
+        request_id = await submit_job(model["endpoint"], fal_payload)
+        job.fal_request_id = request_id
+        job.status = "running"
+        db.commit()
+        log_action(db, user, "CREATE", "MediaJob", str(job.id),
+                   detail=f"video submit endpoint={model['endpoint']} req={request_id}")
+    except HTTPException:
+        _refund_and_fail(db, user, job, "fal submission failed (HTTPException)")
+        raise
+    except Exception as e:
+        _refund_and_fail(db, user, job, f"fal submission failed: {e}")
+        raise HTTPException(status_code=502, detail=f"Video generation failed to start: {e}")
 
     db.refresh(job)
     return _serialize_job(job)

@@ -62,9 +62,19 @@
               <input class="form-control" name="image_url" type="url" placeholder="https://…">
             </div>
             <div class="col-md-6">
-              <label class="form-label">Link URL (optional)</label>
-              <input class="form-control" name="link_url" type="url" placeholder="https://…">
+              <label class="form-label d-flex align-items-center">
+                <span>Video URL (optional)</span>
+                <button type="button" class="btn btn-sm btn-soft ms-auto" id="generate-video-btn"
+                        data-target-video-input="video_url">
+                  <i class="fas fa-film me-1"></i> Generate
+                </button>
+              </label>
+              <input class="form-control" name="video_url" type="url" placeholder="https://…">
             </div>
+          </div>
+          <div class="mb-3">
+            <label class="form-label">Link URL (optional)</label>
+            <input class="form-control" name="link_url" type="url" placeholder="https://…">
           </div>
 
           <div class="mb-4">
@@ -107,6 +117,110 @@
   </div>
 </div>
 {% endif %}
+
+<!-- =========================================================
+     Generate-video modal (mirrors image flow, single reference,
+     longer poll window, <video> result, fills a video_url field).
+     ========================================================= -->
+<div class="modal fade" id="vid-gen-modal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered modal-lg">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title"><i class="fas fa-film me-2 text-muted"></i>Generate video</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+
+        <div id="vid-step-form">
+          <div class="row g-3 mb-3">
+            <div class="col-md-7">
+              <label class="form-label">Model</label>
+              <select id="vid-model" class="form-select"></select>
+            </div>
+            <div class="col-md-2">
+              <label class="form-label">Duration</label>
+              <select id="vid-duration" class="form-select"></select>
+            </div>
+            <div class="col-md-3">
+              <label class="form-label">Aspect</label>
+              <select id="vid-aspect" class="form-select">
+                <option value="auto">Auto</option>
+                <option value="16:9">16:9 wide</option>
+                <option value="9:16">9:16 vertical</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="row g-3 mb-3" id="vid-veo-extras">
+            <div class="col-md-6">
+              <label class="form-label">Resolution</label>
+              <select id="vid-resolution" class="form-select">
+                <option value="720p" selected>720p</option>
+                <option value="1080p">1080p</option>
+                <option value="4k">4K</option>
+              </select>
+            </div>
+            <div class="col-md-6 d-flex align-items-end">
+              <div class="form-check form-switch">
+                <input class="form-check-input" type="checkbox" id="vid-audio" checked>
+                <label class="form-check-label" for="vid-audio">Generate native audio (Veo only)</label>
+              </div>
+            </div>
+          </div>
+
+          <div class="mb-3">
+            <label class="form-label d-flex align-items-center">
+              <span>Reference image <span class="text-muted small">(animated as the first frame)</span></span>
+              <a href="/assets" target="_blank" class="ms-auto small">Manage library &nearr;</a>
+            </label>
+            <div id="vid-asset-picker" class="d-flex gap-2 flex-wrap"
+                 style="min-height:64px; padding:.5rem; background:#fafbfd; border:1px dashed var(--g-border); border-radius:var(--g-radius-md);">
+              <span class="text-muted small m-2">Loading your library…</span>
+            </div>
+          </div>
+
+          <div class="mb-1">
+            <label class="form-label">Motion / scene prompt</label>
+            <textarea id="vid-prompt" class="form-control" rows="3"
+                      placeholder="e.g. The mascot waves and points to the bottle on the table, golden hour light, gentle camera dolly-in"></textarea>
+          </div>
+          <div class="small-meta mt-1" id="vid-cost-line">&nbsp;</div>
+        </div>
+
+        <div id="vid-step-running" class="text-center d-none py-4">
+          <div class="spinner-border text-primary mb-3" role="status"></div>
+          <div class="fw-semibold" id="vid-running-label">Submitting to fal…</div>
+          <div class="small text-muted mt-1">Video generation usually takes 30 seconds to 4 minutes.</div>
+        </div>
+
+        <div id="vid-step-result" class="d-none">
+          <div class="text-center mb-3">
+            <video id="vid-result-preview" controls playsinline
+                   style="max-width:100%; max-height:420px; border-radius:var(--g-radius-md); border:1px solid var(--g-border-soft); background:#000;">
+            </video>
+          </div>
+          <div class="small-meta text-center" id="vid-result-meta"></div>
+        </div>
+
+        <div id="vid-step-error" class="d-none">
+          <div class="alert alert-danger mb-0" id="vid-error-msg"></div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-soft" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" class="btn btn-soft d-none" id="vid-regenerate-btn">
+          <i class="fas fa-rotate-right me-1"></i> Regenerate
+        </button>
+        <button type="button" class="btn tj-grad-btn d-none" id="vid-use-btn">
+          <i class="fas fa-check me-1"></i> Use this video
+        </button>
+        <button type="button" class="btn tj-grad-btn" id="vid-submit-btn">
+          <i class="fas fa-film me-1"></i> Generate
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
 
 <!-- =========================================================
      Generate-image modal (reusable; triggered by buttons with
@@ -237,6 +351,7 @@ form?.addEventListener('submit', async (e) => {
     content: form.content.value,
     connection_ids: conn_ids,
     image_url: form.image_url.value || null,
+    video_url: form.video_url ? (form.video_url.value || null) : null,
     link_url: form.link_url.value || null,
     scheduled_at: sched ? new Date(sched).toISOString() : null,
   };
@@ -420,5 +535,203 @@ document.querySelectorAll('[data-target-input]').forEach(btn => {
 });
 
 imgModalEl?.addEventListener('hidden.bs.modal', () => { clearTimeout(imgPollTimer); });
+
+/* =================================================================
+   Video-generation modal
+   ================================================================= */
+const vidModalEl = document.getElementById('vid-gen-modal');
+const vidModal = vidModalEl ? new bootstrap.Modal(vidModalEl) : null;
+const vidStepForm    = document.getElementById('vid-step-form');
+const vidStepRunning = document.getElementById('vid-step-running');
+const vidStepResult  = document.getElementById('vid-step-result');
+const vidStepError   = document.getElementById('vid-step-error');
+const vidSubmitBtn   = document.getElementById('vid-submit-btn');
+const vidRegenBtn    = document.getElementById('vid-regenerate-btn');
+const vidUseBtn      = document.getElementById('vid-use-btn');
+const vidModelSel    = document.getElementById('vid-model');
+const vidDurationSel = document.getElementById('vid-duration');
+const vidAspectSel   = document.getElementById('vid-aspect');
+const vidResSel      = document.getElementById('vid-resolution');
+const vidAudioChk    = document.getElementById('vid-audio');
+const vidVeoExtras   = document.getElementById('vid-veo-extras');
+const vidAssetPicker = document.getElementById('vid-asset-picker');
+const vidCostLine    = document.getElementById('vid-cost-line');
+const vidRunningLabel = document.getElementById('vid-running-label');
+const vidResultPreview = document.getElementById('vid-result-preview');
+const vidResultMeta    = document.getElementById('vid-result-meta');
+const vidErrorMsg      = document.getElementById('vid-error-msg');
+
+let vidCatalogState = null;
+let vidAssetsState = [];
+let vidTargetInputName = 'video_url';
+let vidCurrentResultUrl = null;
+let vidPollTimer = null;
+
+function vidShowStep(name) {
+  for (const [n, el] of Object.entries({
+    form: vidStepForm, running: vidStepRunning, result: vidStepResult, error: vidStepError,
+  })) {
+    el?.classList.toggle('d-none', n !== name);
+  }
+  vidSubmitBtn?.classList.toggle('d-none', name !== 'form');
+  vidRegenBtn?.classList.toggle('d-none', name === 'form' || name === 'running');
+  vidUseBtn?.classList.toggle('d-none', name !== 'result');
+}
+
+function vidSelectedModel() {
+  const key = vidModelSel.value;
+  return (vidCatalogState?.models?.video || []).find(m => m.key === key);
+}
+
+function vidUpdateForModel() {
+  const m = vidSelectedModel();
+  if (!m) return;
+  const isKling = m.key.startsWith('kling-');
+  const isVeo = m.key.startsWith('veo-');
+
+  // Duration options
+  vidDurationSel.innerHTML = '';
+  const opts = isVeo ? [['4', '4s'], ['6', '6s'], ['8', '8s']] : [['5', '5s'], ['10', '10s']];
+  opts.forEach(([v, label]) => {
+    const opt = document.createElement('option');
+    opt.value = v; opt.textContent = label;
+    vidDurationSel.appendChild(opt);
+  });
+  vidDurationSel.value = isVeo ? '8' : '5';
+
+  // Veo extras (resolution + audio) only relevant for Veo; aspect ratio
+  // is also Veo-specific (Kling uses input image aspect natively).
+  vidVeoExtras.classList.toggle('d-none', !isVeo);
+  vidAspectSel.parentElement.classList.toggle('d-none', !isVeo);
+
+  vidUpdateCostLine();
+}
+
+function vidUpdateCostLine() {
+  const m = vidSelectedModel();
+  if (!m || !vidCatalogState) { vidCostLine.textContent = ''; return; }
+  const bal = vidCatalogState.balance;
+  const enough = bal >= m.credits;
+  vidCostLine.innerHTML = `Cost: <strong>${m.credits} credits</strong> &middot; Balance: ${bal}` +
+    (enough ? '' : ' &middot; <span class="text-warning">Not enough credits</span>');
+  vidSubmitBtn.disabled = !enough;
+}
+
+function vidRenderAssetPicker() {
+  if (!vidAssetsState.length) {
+    vidAssetPicker.innerHTML = `<div class="alert alert-warning small w-100 mb-0">Video models need a reference image. <a href="/assets" target="_blank">Upload one first</a>.</div>`;
+    return;
+  }
+  // Radio buttons — only one reference image for video
+  vidAssetPicker.innerHTML = vidAssetsState.map((a, i) => `
+    <label class="d-flex align-items-center gap-2 px-2 py-1"
+           style="border:1px solid var(--g-border-soft); border-radius:8px; background:white; cursor:pointer;">
+      <input type="radio" name="vid-ref" class="form-check-input m-0 vid-ref-radio" value="${a.id}" ${i === 0 ? 'checked' : ''}>
+      <img src="${a.file_url}" alt="${a.name}" style="width:48px;height:48px;object-fit:cover;border-radius:4px;">
+      <div>
+        <div class="small fw-semibold">${a.name}</div>
+        <span class="hl hl-muted">${a.kind}</span>
+      </div>
+    </label>
+  `).join('');
+}
+
+async function vidOpenModal(targetInputName) {
+  vidTargetInputName = targetInputName || 'video_url';
+  vidCurrentResultUrl = null;
+  vidShowStep('form');
+  document.getElementById('vid-prompt').value = '';
+
+  const [catalog, assetsResp] = await Promise.all([
+    TJ.api.get('/api/media/catalog'),
+    TJ.api.get('/api/media/assets'),
+  ]);
+  if (!catalog || !assetsResp) return;
+  vidCatalogState = catalog;
+  vidAssetsState = assetsResp.assets || [];
+
+  vidModelSel.innerHTML = (catalog.models.video || []).map(m =>
+    `<option value="${m.key}" ${m.default ? 'selected' : ''}>${m.label} — ${m.credits} cr</option>`
+  ).join('');
+  vidUpdateForModel();
+  vidRenderAssetPicker();
+  vidModal.show();
+}
+
+vidModelSel?.addEventListener('change', vidUpdateForModel);
+
+async function vidSubmitGeneration() {
+  const m = vidSelectedModel();
+  if (!m) return;
+  const prompt = document.getElementById('vid-prompt').value.trim();
+  if (prompt.length < 3) {
+    TJ.notify.warning('Write a motion/scene prompt of at least a few words.');
+    return;
+  }
+  const ref = document.querySelector('.vid-ref-radio:checked');
+  if (!ref) { TJ.notify.warning('Pick a reference image.'); return; }
+
+  vidShowStep('running');
+  vidRunningLabel.textContent = `Submitting to fal (${m.label})…`;
+
+  const data = await TJ.api.post('/api/media/jobs/video', {
+    prompt,
+    model_key: m.key,
+    asset_id: parseInt(ref.value, 10),
+    duration_seconds: parseInt(vidDurationSel.value, 10),
+    aspect_ratio: vidAspectSel.value,
+    resolution: vidResSel.value,
+    generate_audio: vidAudioChk.checked,
+  });
+  if (!data) { vidShowStep('form'); return; }
+  vidRunningLabel.textContent = `Generating (${m.label}) — this can take a few minutes…`;
+  vidPollJob(data.id, 0);
+}
+
+function vidPollJob(jobId, attempt) {
+  clearTimeout(vidPollTimer);
+  // Video gen is slow. Start at 5s, ramp up to 10s after the first stretch.
+  const wait = attempt < 6 ? 5000 : (attempt < 18 ? 8000 : 12000);
+  vidPollTimer = setTimeout(async () => {
+    const job = await TJ.api.get(`/api/media/jobs/${jobId}`);
+    if (!job) return;
+    if (job.status === 'done') {
+      vidCurrentResultUrl = job.result_url;
+      vidResultPreview.src = job.result_url;
+      vidResultMeta.textContent = `Took ${job.completed_at ? Math.round((new Date(job.completed_at) - new Date(job.created_at)) / 1000) : '–'}s · ${job.cost_credits} credits`;
+      vidShowStep('result');
+      try {
+        const refreshed = await TJ.api.get('/api/media/catalog');
+        if (refreshed) vidCatalogState = refreshed;
+      } catch (_) {}
+      return;
+    }
+    if (job.status === 'failed') {
+      vidErrorMsg.textContent = job.error || 'Generation failed. Credits were refunded.';
+      vidShowStep('error');
+      return;
+    }
+    vidPollJob(jobId, attempt + 1);
+  }, wait);
+}
+
+vidSubmitBtn?.addEventListener('click', vidSubmitGeneration);
+vidRegenBtn?.addEventListener('click', () => { vidShowStep('form'); });
+vidUseBtn?.addEventListener('click', () => {
+  if (!vidCurrentResultUrl) return;
+  const target = document.querySelector(`#compose-form [name="${vidTargetInputName}"]`);
+  if (target) {
+    target.value = vidCurrentResultUrl;
+    target.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+  vidModal.hide();
+  TJ.notify.success('Video attached to the post.');
+});
+
+document.querySelectorAll('[data-target-video-input]').forEach(btn => {
+  btn.addEventListener('click', () => vidOpenModal(btn.dataset.targetVideoInput));
+});
+
+vidModalEl?.addEventListener('hidden.bs.modal', () => { clearTimeout(vidPollTimer); vidResultPreview.pause(); });
 </script>
 {% endblock %}

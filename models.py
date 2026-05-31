@@ -116,6 +116,7 @@ class SocialPost(Base):
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     content = Column(Text, nullable=False)
     image_url = Column(String, nullable=True)
+    video_url = Column(String, nullable=True)
     link_url = Column(String, nullable=True)
     connection_ids = Column(String, nullable=False)  # comma-separated
     scheduled_at = Column(DateTime, nullable=True)
@@ -359,8 +360,8 @@ def _upgrade_social_connections(conn):
 def _upgrade_media(conn):
     """Future-proof column adds on media tables. The CREATE happens via
     Base.metadata.create_all; this is for additive schema changes."""
-    # Reserved — no columns to backfill yet on the freshly added media tables.
-    return
+    if not _column_exists(conn, "social_posts", "video_url"):
+        conn.execute(text("ALTER TABLE social_posts ADD COLUMN video_url VARCHAR"))
 
 
 def _seed_tier_configs(db) -> None:

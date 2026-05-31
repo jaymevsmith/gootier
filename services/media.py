@@ -245,3 +245,79 @@ def extract_first_image_url(result: dict) -> str:
             raise ValueError(f"Image entry missing url: {first}")
         return url
     raise ValueError(f"Unrecognised image entry shape: {type(first)}")
+
+
+# ---------------------------------------------------------------------------
+# Video generation
+# ---------------------------------------------------------------------------
+
+# Each video model accepts a different `duration` shape. Normalize from a UI
+# integer (5, 6, 8, 10) into the literal the model wants.
+def _normalize_video_duration(endpoint: str, seconds: int) -> str:
+    if "kling-video" in endpoint:
+        # Kling 2.1: enum is "5" or "10"
+        return "10" if seconds >= 10 else "5"
+    if "veo3.1" in endpoint:
+        # Veo 3.1: enum is "4s" / "6s" / "8s"
+        if seconds >= 8:
+            return "8s"
+        if seconds >= 6:
+            return "6s"
+        return "4s"
+    return str(seconds)
+
+
+def build_video_payload(model: dict, prompt: str, ref_url: str,
+                          duration_seconds: int = 5,
+                          aspect_ratio: str = "auto",
+                          resolution: str = "720p",
+                          generate_audio: bool = True) -> dict:
+    """Construct the fal payload for an image-to-video model.
+
+    All shipping defaults are image-to-video (Kling 2.1 + Veo 3.1), which all
+    take a single `image_url` + `prompt`. Model-specific extras get added
+    based on endpoint.
+    """
+    endpoint = model["endpoint"]
+    if not ref_url:
+        raise ValueError("Image-to-video models require a reference image.")
+
+    base = {
+        "image_url": ref_url,
+        "prompt": prompt,
+        "duration": _normalize_video_duration(endpoint, duration_seconds),
+    }
+
+    if "kling-video" in endpoint:
+        # Kling has no aspect_ratio parameter (uses input image as-is) and
+        # no audio. cfg_scale leaves default.
+        return base
+
+    if "veo3.1" in endpoint:
+        if aspect_ratio not in ("auto", "16:9", "9:16"):
+            aspect_ratio = "auto"
+        if resolution not in ("720p", "1080p", "4k"):
+            resolution = "720p"
+        return {
+            **base,
+            "aspect_ratio": aspect_ratio,
+            "resolution": resolution,
+            "generate_audio": bool(generate_audio),
+        }
+
+    return base
+
+
+def extract_video_url(result: dict) -> str:
+    """fal video models return `{video: {url, ...}}` or sometimes a bare URL string."""
+    video = (result or {}).get("video")
+    if not video:
+        raise ValueError("Result payload contained no video")
+    if isinstance(video, str):
+        return video
+    if isinstance(video, dict):
+        url = video.get("url") or video.get("video_url")
+        if not url:
+            raise ValueError(f"Video entry missing url: {video}")
+        return url
+    raise ValueError(f"Unrecognised video entry shape: {type(video)}")
