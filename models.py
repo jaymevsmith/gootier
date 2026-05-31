@@ -174,6 +174,66 @@ class ActionLog(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
 
+class MediaAsset(Base):
+    """User-owned reference images (mascot / person / product) reused across generations."""
+    __tablename__ = "media_assets"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    name = Column(String, nullable=False)
+    kind = Column(String, default="other", nullable=False)  # mascot | person | product | other
+    file_url = Column(String, nullable=False)
+    file_size_bytes = Column(Integer, nullable=True)
+    width = Column(Integer, nullable=True)
+    height = Column(Integer, nullable=True)
+    mime_type = Column(String, nullable=True)
+    is_active = Column(Boolean, default=True, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    user = relationship("User", backref="media_assets")
+
+
+class MediaJob(Base):
+    """Async media generation job tracked from fal.ai webhook callbacks."""
+    __tablename__ = "media_jobs"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    kind = Column(String, nullable=False)  # image | video
+    provider = Column(String, default="fal", nullable=False)
+    model_key = Column(String, nullable=False)        # short key into MEDIA_MODEL_CATALOG
+    model_endpoint = Column(String, nullable=False)   # fal endpoint id, e.g. fal-ai/kling-video/...
+    prompt = Column(Text, nullable=False)
+    ref_asset_ids = Column(String, nullable=True)     # comma-separated MediaAsset ids
+    aspect_ratio = Column(String, nullable=True)
+    duration_seconds = Column(Integer, nullable=True)
+    status = Column(String, default="queued", nullable=False)  # queued|running|done|failed|cancelled
+    fal_request_id = Column(String, nullable=True, index=True)
+    result_url = Column(String, nullable=True)
+    thumbnail_url = Column(String, nullable=True)
+    error = Column(Text, nullable=True)
+    cost_credits = Column(Integer, default=0, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    completed_at = Column(DateTime, nullable=True)
+
+    user = relationship("User", backref="media_jobs")
+
+
+class CreditLedger(Base):
+    """Append-only ledger of credit grants and spends. Balance = SUM(delta)."""
+    __tablename__ = "credit_ledger"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    delta = Column(Integer, nullable=False)  # positive=grant, negative=spend
+    reason = Column(String, nullable=False)  # monthly_grant_<tier>, topup_pack_<n>, image_gen, video_gen, refund, admin_adjust
+    media_job_id = Column(Integer, ForeignKey("media_jobs.id"), nullable=True)
+    stripe_session_id = Column(String, nullable=True, index=True)
+    granted_for_month = Column(String, nullable=True, index=True)  # YYYY-MM for monthly_grant rows
+    detail = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
 class EnvConfig(Base):
     """Runtime env-var overrides editable from the admin panel.
 
@@ -264,6 +324,8 @@ KNOWN_ENV_KEYS = [
     ("META_APP_ID",            "social",  False, False, "Facebook/Meta developer app ID."),
     ("META_APP_SECRET",        "social",  True,  False, "Facebook/Meta developer app secret."),
     ("META_OAUTH_REDIRECT",    "social",  False, False, "OAuth redirect URI registered with Meta. Must match exactly."),
+
+    ("FAL_API_KEY",            "ai",      True,  False, "fal.ai API key powering image + video generation."),
 ]
 
 
@@ -292,6 +354,13 @@ def _upgrade_users(conn):
 def _upgrade_social_connections(conn):
     if not _column_exists(conn, "social_connections", "refresh_token"):
         conn.execute(text("ALTER TABLE social_connections ADD COLUMN refresh_token TEXT"))
+
+
+def _upgrade_media(conn):
+    """Future-proof column adds on media tables. The CREATE happens via
+    Base.metadata.create_all; this is for additive schema changes."""
+    # Reserved — no columns to backfill yet on the freshly added media tables.
+    return
 
 
 def _seed_tier_configs(db) -> None:
@@ -367,6 +436,7 @@ def init_db() -> None:
     with engine.begin() as conn:
         _upgrade_users(conn)
         _upgrade_social_connections(conn)
+        _upgrade_media(conn)
     from database import SessionLocal
     db = SessionLocal()
     try:

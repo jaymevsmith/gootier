@@ -1,0 +1,157 @@
+{% extends "base.html" %}
+{% block title %}Media library &middot; Gootier{% endblock %}
+
+{% block page_header %}
+<div class="page-header-row">
+  <div>
+    <div class="eyebrow">Create</div>
+    <h1>Media library</h1>
+    <p class="lede">Upload your mascot, spokesperson, or products once &mdash; reuse them in every image &amp; video generation.</p>
+  </div>
+  <div class="actions">
+    <span class="hl hl-indigo">{{ credits|default(0) }} credits</span>
+  </div>
+</div>
+{% endblock %}
+
+{% block content %}
+<div class="row g-4">
+  <div class="col-lg-5">
+    <div class="card-x">
+      <div class="card-x-header">
+        <h6><i class="fas fa-cloud-arrow-up me-2 text-muted"></i>Add a reference asset</h6>
+      </div>
+      <div class="card-x-body">
+        <form id="asset-form">
+          <div class="mb-3">
+            <label class="form-label">Name</label>
+            <input class="form-control" name="name" required maxlength="80"
+                   placeholder="e.g. Bean the mascot, Founder headshot, Bottle SKU">
+          </div>
+          <div class="mb-3">
+            <label class="form-label">Kind</label>
+            <select class="form-select" name="kind">
+              {% for k in kinds %}<option value="{{ k }}">{{ k|capitalize }}</option>{% endfor %}
+            </select>
+            <div class="form-text">Helps the AI builder pick the right asset for each campaign item.</div>
+          </div>
+          <div class="mb-4">
+            <label class="form-label">Image file</label>
+            <input class="form-control" type="file" name="file"
+                   accept="image/png,image/jpeg,image/webp,image/gif" required>
+            <div class="form-text">PNG, JPEG, WebP, or GIF. Up to 12 MB. Higher resolution = better generations.</div>
+          </div>
+          <button type="submit" class="btn tj-grad-btn w-100">
+            <i class="fas fa-upload me-2"></i> Upload
+          </button>
+        </form>
+      </div>
+    </div>
+
+    <div class="card-x mt-4">
+      <div class="card-x-body">
+        <div class="d-flex align-items-start gap-2">
+          <i class="fas fa-circle-info text-info mt-1"></i>
+          <div class="small text-muted">
+            Reference images live on fal&apos;s CDN. They feed every generation as a character reference, so the same mascot or face shows up consistently across posts and videos.
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="col-lg-7">
+    {% if assets %}
+    <div class="row g-3" id="asset-grid">
+      {% for a in assets %}
+      <div class="col-md-6 col-lg-4" data-asset-id="{{ a.id }}">
+        <div class="card-x h-100">
+          <div style="aspect-ratio: 1/1; overflow: hidden; background: #fafbfd; border-top-left-radius: var(--g-radius-lg); border-top-right-radius: var(--g-radius-lg);">
+            <img src="{{ a.file_url }}" alt="{{ a.name }}"
+                 style="width:100%; height:100%; object-fit:cover; display:block;">
+          </div>
+          <div class="card-x-body p-3">
+            <div class="d-flex align-items-start">
+              <div class="flex-grow-1 min-width-0">
+                <div class="fw-semibold text-truncate" title="{{ a.name }}">{{ a.name }}</div>
+                <div class="small-meta">
+                  <span class="hl hl-muted">{{ a.kind }}</span>
+                  {% if a.width and a.height %}<span class="ms-1">{{ a.width }}&times;{{ a.height }}</span>{% endif %}
+                </div>
+              </div>
+              <button class="btn btn-sm btn-soft" data-delete-asset="{{ a.id }}" title="Remove">
+                <i class="fas fa-trash"></i>
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <div class="empty-state">
+      <div class="empty-icon"><i class="fas fa-images"></i></div>
+      <h5>No assets yet</h5>
+      <p>Upload your first reference image to start generating consistent visuals across posts and videos.</p>
+    </div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.getElementById('asset-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const form = e.target;
+  const fd = new FormData(form);
+
+  const file = form.file.files[0];
+  if (file && file.size > 12 * 1024 * 1024) {
+    TJ.notify.warning('That file is over 12 MB. Resize or compress it first.');
+    return;
+  }
+
+  const btn = form.querySelector('button[type=submit]');
+  const restore = TJ.btnLoading(btn, 'Uploading…');
+  TJ.progress.start('Uploading to fal…');
+
+  let data = null;
+  try {
+    const res = await fetch('/api/media/assets', { method: 'POST', body: fd, credentials: 'same-origin' });
+    if (res.status === 401) { window.location.href = '/login'; return; }
+    data = await res.json().catch(() => null);
+    if (!res.ok) {
+      const msg = (data && data.detail) || `Upload failed (${res.status})`;
+      TJ.progress.fail();
+      TJ.notify[res.status === 403 || res.status === 413 ? 'warning' : 'error'](msg);
+      return;
+    }
+    TJ.progress.done('Uploaded');
+  } catch (err) {
+    TJ.progress.fail();
+    TJ.notify.error('Network error — check your connection');
+  } finally {
+    restore();
+  }
+
+  if (data) setTimeout(() => location.reload(), 600);
+});
+
+document.querySelectorAll('[data-delete-asset]').forEach(btn => {
+  btn.addEventListener('click', async () => {
+    const ok = await TJ.confirm('Remove this reference asset? Existing generated content that used it stays put.', {
+      title: 'Remove asset', okLabel: 'Remove', danger: true,
+    });
+    if (!ok) return;
+    const id = btn.dataset.deleteAsset;
+    const data = await TJ.api.del(`/api/media/assets/${id}`, { successMsg: 'Removed' });
+    if (data) {
+      const card = btn.closest('[data-asset-id]');
+      card?.remove();
+      if (!document.querySelectorAll('[data-asset-id]').length) location.reload();
+    }
+  });
+});
+</script>
+{% endblock %}
