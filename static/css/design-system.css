@@ -58,6 +58,55 @@ html, body {
   -webkit-font-smoothing: antialiased;
 }
 
+/* ============================================================
+   A11y: visible focus rings on every interactive element.
+   Browser defaults are inconsistent and Bootstrap's outline:0
+   pattern is hostile to keyboard users — we want a clear ring
+   on focus-visible (not on mouse click) for all controls.
+   ============================================================ */
+:focus { outline: none; }
+a:focus-visible, button:focus-visible,
+input:focus-visible, select:focus-visible, textarea:focus-visible,
+[role="button"]:focus-visible, [tabindex]:focus-visible {
+  outline: 2px solid var(--g-primary);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 4px rgba(91,110,225,.18);
+  border-radius: var(--g-radius-sm);
+}
+
+/* Skip link: hidden until focused, jumps keyboard users past the sidebar */
+.skip-link {
+  position: absolute;
+  top: 0;
+  left: 0;
+  background: var(--g-primary);
+  color: #fff;
+  padding: .65rem 1rem;
+  border-bottom-right-radius: var(--g-radius-md);
+  z-index: 10000;
+  transform: translateY(-110%);
+  transition: transform .15s ease;
+  font-weight: 600;
+  text-decoration: none;
+}
+.skip-link:focus-visible {
+  transform: translateY(0);
+  color: #fff;
+  text-decoration: none;
+}
+
+/* Screen-reader-only utility */
+.visually-hidden, .sr-only {
+  position: absolute !important;
+  width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important; }
+}
+
 a { color: var(--g-primary); text-decoration: none; }
 a:hover { color: var(--g-primary-2); text-decoration: underline; }
 
