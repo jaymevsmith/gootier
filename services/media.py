@@ -157,11 +157,19 @@ async def upload_bytes(content: bytes, content_type: str) -> str:
     return url
 
 
-async def submit_job(endpoint: str, payload: dict) -> str:
-    """Submit a generation job. Returns the fal request_id for polling/webhook."""
+async def submit_job(endpoint: str, payload: dict, webhook_url: Optional[str] = None) -> str:
+    """Submit a generation job. Returns the fal request_id.
+
+    When `webhook_url` is provided, fal will POST the completion event to it,
+    eliminating the polling lag. The polling endpoint still works as a fallback
+    for clients that want to render progress in the UI.
+    """
     _sync_fal_key()
     import fal_client
-    handler = await fal_client.submit_async(endpoint, arguments=payload)
+    kwargs = {"arguments": payload}
+    if webhook_url:
+        kwargs["webhook_url"] = webhook_url
+    handler = await fal_client.submit_async(endpoint, **kwargs)
     return handler.request_id
 
 

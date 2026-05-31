@@ -43,11 +43,21 @@ async def dashboard(
     pending_blasts = db.query(EmailBlast).filter(
         EmailBlast.user_id == user.id, EmailBlast.status == "pending",
     ).count()
+    from datetime import timedelta
+    from services.analytics import summarise_metrics
     usage = usage_summary(db, user)
     media_in_flight = db.query(MediaJob).filter(
         MediaJob.user_id == user.id,
         MediaJob.status.in_(("queued", "running")),
     ).order_by(MediaJob.created_at.desc()).limit(8).all()
+    # Performance from last 30 days of published posts that have analytics.
+    cutoff = datetime.utcnow() - timedelta(days=30)
+    analytics_posts = db.query(SocialPost).filter(
+        SocialPost.user_id == user.id,
+        SocialPost.status.in_(("published", "partial")),
+        SocialPost.created_at >= cutoff,
+    ).all()
+    performance = summarise_metrics(analytics_posts)
     recent_media = db.query(MediaJob).filter(
         MediaJob.user_id == user.id,
         MediaJob.status == "done",
@@ -63,6 +73,7 @@ async def dashboard(
         media_in_flight=media_in_flight,
         recent_media=recent_media,
         credit_balance=credit_balance,
+        performance=performance,
     ))
 
 
@@ -129,6 +140,20 @@ async def scheduled_page(
     return templates.TemplateResponse(request, "scheduled.html", _ctx(
         user, posts=posts, blasts=blasts,
     ))
+
+
+@router.get("/blasts")
+async def blasts_page(
+    request: Request,
+    user: User = Depends(get_current_user_optional),
+    db: Session = Depends(get_db),
+):
+    if not user:
+        return RedirectResponse(url="/login", status_code=303)
+    history = db.query(EmailBlast).filter(
+        EmailBlast.user_id == user.id,
+    ).order_by(EmailBlast.created_at.desc()).limit(50).all()
+    return templates.TemplateResponse(request, "blasts.html", _ctx(user, history=history))
 
 
 @router.get("/profile")

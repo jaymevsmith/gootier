@@ -1,7 +1,7 @@
 import asyncio
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import List
 
 from database import SessionLocal
@@ -132,12 +132,46 @@ def _resolve_media_for_post(db, post: SocialPost):
     return image_url, video_url, wait
 
 
+async def _refresh_recent_analytics() -> None:
+    """Walk recently-published posts and refresh per-platform insights.
+
+    Caps the per-tick budget so a quiet account stays cheap; busy accounts
+    will catch up across multiple ticks.
+    """
+    from datetime import timedelta
+    from services.analytics import fetch_post_metrics
+    cutoff = datetime.utcnow() - timedelta(days=7)
+    db = SessionLocal()
+    try:
+        # Prefer posts whose analytics we've never fetched, then oldest fetched.
+        posts = (
+            db.query(SocialPost)
+            .filter(SocialPost.status.in_(("published", "partial")))
+            .filter(SocialPost.created_at >= cutoff)
+            .order_by(SocialPost.analytics_fetched_at.asc().nullsfirst())
+            .limit(20)
+            .all()
+        )
+        for post in posts:
+            try:
+                await fetch_post_metrics(db, post)
+            except Exception as e:
+                logger.warning("analytics refresh failed for post %s: %s", post.id, e)
+    finally:
+        db.close()
+
+
 async def scheduler_loop() -> None:
     logger.info("Gootier scheduler loop starting")
+    tick = 0
+    ANALYTICS_EVERY_TICKS = 10  # 10 minutes when INTERVAL_SECONDS=60
     while True:
+        tick += 1
         try:
             await _process_due_posts()
             _process_due_blasts()
+            if tick % ANALYTICS_EVERY_TICKS == 0:
+                await _refresh_recent_analytics()
         except Exception as e:
             logger.exception("Scheduler tick failed: %s", e)
         await asyncio.sleep(INTERVAL_SECONDS)

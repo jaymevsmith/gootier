@@ -324,6 +324,25 @@ async def cancel_post(
 
 # ------------------------------ Email blasts ------------------------------ #
 
+@router.post("/analytics/refresh/{post_id}")
+async def refresh_analytics(
+    post_id: int,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """On-demand refresh of metrics for a single published post."""
+    from services.analytics import fetch_post_metrics
+    post = db.query(SocialPost).filter(
+        SocialPost.id == post_id, SocialPost.user_id == user.id,
+    ).first()
+    if not post:
+        raise HTTPException(status_code=404, detail="Post not found")
+    if post.status not in ("published", "partial"):
+        raise HTTPException(status_code=400, detail="Post hasn't been published yet")
+    metrics = await fetch_post_metrics(db, post)
+    return {"ok": True, "metrics": metrics, "fetched_at": post.analytics_fetched_at.isoformat() if post.analytics_fetched_at else None}
+
+
 @router.delete("/email-blasts/{blast_id}/cancel")
 async def cancel_blast(
     blast_id: int,
@@ -404,6 +423,7 @@ async def ai_generate(
 @router.post("/ai/schedule")
 async def ai_schedule(
     payload: CampaignScheduleRequest,
+    request: Request,
     user: User = Depends(require_perm("marketing.ai_generate")),
     db: Session = Depends(get_db),
 ):
@@ -523,7 +543,7 @@ async def ai_schedule(
                 job = await _enqueue_media_job(
                     db, user, kind="image", model=image_model,
                     prompt=item.image_prompt, ref_urls=[image_asset.file_url],
-                    ref_asset_ids=[image_asset.id],
+                    ref_asset_ids=[image_asset.id], request=request,
                 )
                 if job is None:
                     media_errors.append(f"image gen failed for item {created_posts}")
@@ -534,7 +554,7 @@ async def ai_schedule(
                 job = await _enqueue_media_job(
                     db, user, kind="video", model=video_model,
                     prompt=item.video_prompt, ref_urls=[video_asset.file_url],
-                    ref_asset_ids=[video_asset.id],
+                    ref_asset_ids=[video_asset.id], request=request,
                 )
                 if job is None:
                     media_errors.append(f"video gen failed for item {created_posts}")
@@ -571,10 +591,12 @@ async def ai_schedule(
 
 
 async def _enqueue_media_job(db, user, *, kind: str, model: dict, prompt: str,
-                              ref_urls: list, ref_asset_ids: list):
+                              ref_urls: list, ref_asset_ids: list,
+                              request: Optional[Request] = None):
     """Spend credits + create a MediaJob row + submit to fal. Returns the job
     on success, or None if any step failed (with credit refund + log)."""
     from models import MediaJob
+    import secrets as _py_secrets
     cost = int(model["credits"])
     try:
         credits_spend(db, user, cost, reason=f"{kind}_gen",
@@ -582,6 +604,7 @@ async def _enqueue_media_job(db, user, *, kind: str, model: dict, prompt: str,
     except HTTPException:
         return None
 
+    webhook_token = _py_secrets.token_urlsafe(24)
     job = MediaJob(
         user_id=user.id,
         kind=kind,
@@ -592,6 +615,7 @@ async def _enqueue_media_job(db, user, *, kind: str, model: dict, prompt: str,
         ref_asset_ids=",".join(str(i) for i in ref_asset_ids),
         status="queued",
         cost_credits=cost,
+        webhook_token=webhook_token,
     )
     db.add(job)
     db.flush()
@@ -601,12 +625,15 @@ async def _enqueue_media_job(db, user, *, kind: str, model: dict, prompt: str,
             fal_payload = build_image_payload(model, prompt, ref_urls)
         else:
             fal_payload = build_video_payload(model, prompt, ref_urls[0])
-        request_id = await submit_job(model["endpoint"], fal_payload)
+        webhook_url = None
+        if request is not None:
+            from routes.media_routes import _webhook_url_for
+            webhook_url = _webhook_url_for(request, job.id, webhook_token)
+        request_id = await submit_job(model["endpoint"], fal_payload, webhook_url=webhook_url)
         job.fal_request_id = request_id
         job.status = "running"
         return job
     except Exception as e:
-        # Refund the spend by adding a positive ledger entry.
         from services.credits import grant as credits_grant
         credits_grant(db, user, cost, reason=f"refund_failed_{job.id}",
                        detail=f"Auto-refund — AI campaign media job failed: {e}")

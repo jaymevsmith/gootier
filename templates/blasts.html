@@ -1,0 +1,194 @@
+{% extends "base.html" %}
+{% block title %}Email blasts &middot; Gootier{% endblock %}
+
+{% block page_header %}
+<div class="page-header-row">
+  <div>
+    <div class="eyebrow">Create</div>
+    <h1>Email blasts</h1>
+    <p class="lede">Compose a one-off email or schedule it &mdash; AI builder campaigns also land here.</p>
+  </div>
+  <div class="actions">
+    <a href="/ai-builder" class="btn btn-soft"><i class="fas fa-wand-magic-sparkles me-2"></i>AI campaign</a>
+  </div>
+</div>
+{% endblock %}
+
+{% block content %}
+<div class="row g-4">
+  <div class="col-lg-7">
+    <div class="card-x">
+      <div class="card-x-header">
+        <h6><i class="fas fa-envelope me-2 text-muted"></i>Compose</h6>
+      </div>
+      <div class="card-x-body">
+        <form id="blast-form">
+          <div class="mb-3">
+            <label class="form-label">Subject</label>
+            <input class="form-control" name="subject" required maxlength="200"
+                   placeholder="e.g. We're launching the iced latte SKU on Monday">
+          </div>
+
+          <div class="mb-3">
+            <label class="form-label d-flex align-items-center">
+              <span>HTML body</span>
+              <span class="ms-auto small-meta">Paste rich HTML or write plain text — both work.</span>
+            </label>
+            <textarea class="form-control font-monospace" name="body_html" rows="10" required
+                      placeholder="&lt;p&gt;Hi friends,&lt;/p&gt;&#10;&lt;p&gt;Big news: …&lt;/p&gt;"></textarea>
+          </div>
+
+          <div class="mb-3">
+            <label class="form-label d-flex align-items-center">
+              <span>Recipients</span>
+              <span class="ms-auto small-meta">One email address per line.</span>
+            </label>
+            <textarea class="form-control" name="recipients" rows="5" required
+                      placeholder="alice@example.com&#10;bob@example.com"></textarea>
+            <div class="form-text"><span id="blast-recipient-count">0</span> recipient(s)</div>
+          </div>
+
+          <div class="mb-4">
+            <label class="form-label">Schedule (leave blank to send immediately)</label>
+            <input class="form-control" name="scheduled_at" type="datetime-local">
+          </div>
+
+          <button type="submit" class="btn tj-grad-btn">
+            <i class="fas fa-paper-plane me-2"></i> Send or schedule
+          </button>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <div class="col-lg-5">
+    <div class="card-x">
+      <div class="card-x-header">
+        <h6><i class="fas fa-eye me-2 text-muted"></i>Preview</h6>
+      </div>
+      <div class="card-x-body">
+        <div id="blast-preview-frame" style="border:1px solid var(--g-border-soft); border-radius:8px; padding:.5rem; background:white; min-height:240px;">
+          <em class="text-muted small">Type HTML on the left to preview here (sandboxed iframe — scripts won&apos;t execute).</em>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<h5 class="mt-5 mb-3">History</h5>
+{% if history %}
+<div class="card-x">
+  <div class="table-responsive">
+    <table class="table-x">
+      <thead>
+        <tr>
+          <th>Subject</th>
+          <th>Status</th>
+          <th>Recipients</th>
+          <th>When</th>
+          <th>AI?</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for b in history %}
+        <tr>
+          <td>{{ b.subject }}</td>
+          <td>
+            {% if b.status == 'sent' %}<span class="hl hl-success">{{ b.status }}</span>
+            {% elif b.status == 'pending' %}<span class="hl hl-warning">{{ b.status }}</span>
+            {% elif b.status == 'partial' %}<span class="hl hl-warning">{{ b.status }} ({{ b.sent_count }}/{{ b.recipient_count }})</span>
+            {% elif b.status == 'cancelled' %}<span class="hl hl-muted">{{ b.status }}</span>
+            {% else %}<span class="hl hl-danger">{{ b.status }}</span>{% endif %}
+          </td>
+          <td>{{ b.sent_count if b.status == 'sent' else b.recipient_count }}</td>
+          <td class="small-meta font-monospace">
+            {% if b.scheduled_at %}{{ b.scheduled_at.strftime('%Y-%m-%d %H:%M UTC') }}
+            {% else %}{{ b.created_at.strftime('%Y-%m-%d %H:%M UTC') }}{% endif %}
+          </td>
+          <td>{% if b.ai_generated %}<span class="hl hl-purple"><i class="fas fa-wand-magic-sparkles me-1"></i>AI</span>{% endif %}</td>
+          <td class="text-end">
+            {% if b.status == 'pending' %}
+            <button class="btn btn-soft btn-sm" data-cancel-blast="{{ b.id }}">
+              <i class="fas fa-xmark me-1"></i> Cancel
+            </button>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% else %}
+<div class="empty-state">
+  <div class="empty-icon"><i class="fas fa-envelope"></i></div>
+  <h5>No blasts yet</h5>
+  <p>Compose one above or let the AI builder draft a full campaign for you.</p>
+</div>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+const form = document.getElementById('blast-form');
+const bodyEl = form.body_html;
+const recipientsEl = form.recipients;
+const previewFrame = document.getElementById('blast-preview-frame');
+const countEl = document.getElementById('blast-recipient-count');
+
+function refreshPreview() {
+  // Sandboxed iframe so user-supplied HTML can't run scripts in our origin.
+  previewFrame.innerHTML = '';
+  const iframe = document.createElement('iframe');
+  iframe.setAttribute('sandbox', '');
+  iframe.srcdoc = bodyEl.value || '<em style="color:#888;font-family:sans-serif;">Empty</em>';
+  iframe.style.cssText = 'width:100%; min-height:240px; border:0;';
+  previewFrame.appendChild(iframe);
+}
+function refreshCount() {
+  const n = recipientsEl.value.split(/\r?\n/).map(s => s.trim()).filter(Boolean).length;
+  countEl.textContent = n;
+}
+bodyEl.addEventListener('input', refreshPreview);
+recipientsEl.addEventListener('input', refreshCount);
+refreshCount();
+
+form.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const recipients = recipientsEl.value.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+  if (!recipients.length) {
+    TJ.notify.warning('Add at least one recipient.');
+    return;
+  }
+  const sched = form.scheduled_at.value;
+  const payload = {
+    subject: form.subject.value,
+    body_html: bodyEl.value,
+    recipients,
+    scheduled_at: sched ? new Date(sched).toISOString() : null,
+  };
+  const btn = form.querySelector('button[type=submit]');
+  const restore = TJ.btnLoading(btn, sched ? 'Scheduling…' : 'Sending…');
+  const data = await TJ.api.post('/api/email-blasts', payload, {
+    progress: true,
+    progressLabel: sched ? 'Saving blast…' : 'Sending blast…',
+    successMsg: sched ? 'Blast scheduled' : 'Blast sent',
+  });
+  restore();
+  if (data) setTimeout(() => location.reload(), 600);
+});
+
+document.querySelectorAll('[data-cancel-blast]').forEach(btn => {
+  btn.addEventListener('click', async () => {
+    const ok = await TJ.confirm("Cancel this scheduled blast? This can't be undone.", {
+      title: 'Cancel scheduled blast', okLabel: 'Yes, cancel', danger: true,
+    });
+    if (!ok) return;
+    const id = btn.dataset.cancelBlast;
+    const data = await TJ.api.del(`/api/email-blasts/${id}/cancel`, { successMsg: 'Cancelled' });
+    if (data) location.reload();
+  });
+});
+</script>
+{% endblock %}

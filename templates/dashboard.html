@@ -47,6 +47,49 @@
   </div>
 </div>
 
+{% if performance and performance.totals and performance.totals.posts_with_data %}
+<div class="card-x mb-4">
+  <div class="card-x-header">
+    <h6><i class="fas fa-chart-line me-2 text-muted"></i>Performance — last 30 days</h6>
+    <span class="ms-auto small text-muted">{{ performance.totals.posts_with_data }} post(s) with data</span>
+  </div>
+  <div class="card-x-body">
+    <div class="row g-3">
+      <div class="col-md-3">
+        <div class="small-meta text-uppercase">Impressions</div>
+        <div class="fw-bold" style="font-size:1.4rem;">{{ "{:,}".format(performance.totals.impressions) }}</div>
+      </div>
+      <div class="col-md-3">
+        <div class="small-meta text-uppercase">Reach</div>
+        <div class="fw-bold" style="font-size:1.4rem;">{{ "{:,}".format(performance.totals.reach) }}</div>
+      </div>
+      <div class="col-md-3">
+        <div class="small-meta text-uppercase">Engagement</div>
+        <div class="fw-bold" style="font-size:1.4rem;">{{ "{:,}".format(performance.totals.engagement) }}</div>
+      </div>
+      <div class="col-md-3">
+        <div class="small-meta text-uppercase">Likes / Comments / Shares</div>
+        <div class="fw-bold" style="font-size:1.4rem;">{{ performance.totals.likes }} / {{ performance.totals.comments }} / {{ performance.totals.shares }}</div>
+      </div>
+    </div>
+    {% if performance.by_platform %}
+    <hr class="my-3">
+    <div class="small-meta mb-2 text-uppercase">By platform</div>
+    <div class="d-flex flex-wrap gap-3">
+      {% for plat, m in performance.by_platform.items() %}
+      <div class="card-x" style="background:#fafbfd;">
+        <div class="card-x-body py-2 px-3">
+          <div class="fw-semibold text-capitalize">{{ plat }}</div>
+          <div class="small-meta">{{ m.impressions }} impressions &middot; {{ m.engagement }} engagement</div>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
+  </div>
+</div>
+{% endif %}
+
 {% if media_in_flight or recent_media %}
 <div class="card-x mb-4">
   <div class="card-x-header">

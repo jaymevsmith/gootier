@@ -8,6 +8,19 @@ from sqlalchemy import (
 from sqlalchemy.orm import relationship
 
 from database import Base, engine
+# NOTE: services.secrets is imported lazily inside _encrypt_existing_tokens to
+# avoid a circular import (services.secrets reads from env_config which reads
+# from models).
+
+
+def _EncryptedText():
+    """Lazy proxy — at class-definition time we can't import services.secrets
+    (circular). At the moment the SocialConnection columns are *bound* by
+    SQLAlchemy, we need the actual TypeDecorator. Solution: a function we call
+    once at module-load time AFTER everything is wired up. We call it here at
+    import end after models classes are declared."""
+    from services.secrets import EncryptedString
+    return EncryptedString()
 
 
 # --------------------------------------------------------------------------- #
@@ -98,8 +111,10 @@ class SocialConnection(Base):
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     platform = Column(String, nullable=False)
     account_name = Column(String, nullable=False)
-    access_token = Column(Text, nullable=False)
-    refresh_token = Column(Text, nullable=True)
+    # Encrypted at rest. EncryptedString transparently encrypts on write and
+    # decrypts on read; legacy plaintext rows keep working until rewritten.
+    access_token = Column("access_token", _EncryptedText(), nullable=False)
+    refresh_token = Column("refresh_token", _EncryptedText(), nullable=True)
     token_secret = Column(String, nullable=True)
     page_id = Column(String, nullable=True)
     expires_at = Column(DateTime, nullable=True)
@@ -120,6 +135,8 @@ class SocialPost(Base):
     link_url = Column(String, nullable=True)
     image_job_id = Column(Integer, ForeignKey("media_jobs.id"), nullable=True)
     video_job_id = Column(Integer, ForeignKey("media_jobs.id"), nullable=True)
+    analytics_json = Column(Text, nullable=True)  # latest per-connection metrics snapshot
+    analytics_fetched_at = Column(DateTime, nullable=True)
     connection_ids = Column(String, nullable=False)  # comma-separated
     scheduled_at = Column(DateTime, nullable=True)
     status = Column(String, default="pending", nullable=False)
@@ -216,6 +233,7 @@ class MediaJob(Base):
     thumbnail_url = Column(String, nullable=True)
     error = Column(Text, nullable=True)
     cost_credits = Column(Integer, default=0, nullable=False)
+    webhook_token = Column(String, nullable=True, index=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     completed_at = Column(DateTime, nullable=True)
 
@@ -308,6 +326,7 @@ KNOWN_ENV_KEYS = [
     ("ALLOWED_ORIGINS",        "core",    False, False, "Comma-separated CORS origins."),
     ("SECRET_KEY",             "core",    True,  True,  "JWT signing secret. Locked — rotate via deploy only (changing invalidates all sessions)."),
     ("DATABASE_URL",           "core",    True,  True,  "SQLAlchemy connection string. Locked — changing live would break the app."),
+    ("TOKEN_ENCRYPTION_KEY",   "core",    True,  True,  "Fernet key for at-rest encryption of OAuth tokens. Locked — rotating without re-encrypting existing rows will lock you out of every social connection. Defaults to a value derived from SECRET_KEY when unset."),
 
     ("SMTP_HOST",              "email",   False, False, "SMTP server hostname (e.g. smtp.sendgrid.net)."),
     ("SMTP_PORT",              "email",   False, False, "SMTP port (587 for STARTTLS, 465 for SSL)."),
@@ -380,6 +399,12 @@ def _upgrade_media(conn):
         conn.execute(text("ALTER TABLE social_posts ADD COLUMN image_job_id INTEGER"))
     if not _column_exists(conn, "social_posts", "video_job_id"):
         conn.execute(text("ALTER TABLE social_posts ADD COLUMN video_job_id INTEGER"))
+    if not _column_exists(conn, "media_jobs", "webhook_token"):
+        conn.execute(text("ALTER TABLE media_jobs ADD COLUMN webhook_token VARCHAR"))
+    if not _column_exists(conn, "social_posts", "analytics_json"):
+        conn.execute(text("ALTER TABLE social_posts ADD COLUMN analytics_json TEXT"))
+    if not _column_exists(conn, "social_posts", "analytics_fetched_at"):
+        conn.execute(text("ALTER TABLE social_posts ADD COLUMN analytics_fetched_at DATETIME"))
 
 
 def _seed_tier_configs(db) -> None:
@@ -462,8 +487,31 @@ def init_db() -> None:
         _seed_tier_configs(db)
         _seed_role_configs(db)
         _seed_env_configs(db)
+        _encrypt_existing_tokens(db)
     finally:
         db.close()
+
+
+def _encrypt_existing_tokens(db) -> None:
+    """One-shot: rewrite any plaintext access_token / refresh_token rows so they
+    pick up the encrypted prefix. Safe to run repeatedly — encrypt() is idempotent."""
+    try:
+        from services.secrets import PREFIX
+    except Exception:
+        return  # cryptography not available — skip
+    rows = db.query(SocialConnection).all()
+    touched = 0
+    for r in rows:
+        # The TypeDecorator decrypts on read, so r.access_token is plaintext
+        # regardless of what's stored. Setting it back through process_bind_param
+        # will encrypt + persist.
+        if r.access_token:
+            r.access_token = r.access_token  # noqa — triggers TypeDecorator on commit
+            touched += 1
+        if r.refresh_token:
+            r.refresh_token = r.refresh_token  # noqa — same
+    if touched:
+        db.commit()
 
 
 def log_action(db, user: Optional[User], action: str, entity_type: str = None,

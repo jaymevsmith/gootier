@@ -2,6 +2,7 @@
 
 Generation endpoints (image / video) and webhook receivers ship in Phase 3+.
 """
+import secrets as py_secrets
 from datetime import datetime
 from typing import List, Optional
 
@@ -15,6 +16,7 @@ from auth import get_current_user, get_current_user_optional
 from database import get_db
 from models import MediaAsset, MediaJob, User, log_action
 from services.credits import balance as credits_balance, grant as credits_grant, spend as credits_spend
+from services.env_config import get_env
 from services.media import (
     ACCEPTED_IMAGE_TYPES, MAX_UPLOAD_BYTES,
     MEDIA_MODEL_CATALOG, build_image_payload, build_video_payload,
@@ -22,6 +24,17 @@ from services.media import (
     fetch_result, fetch_status, resolve_model, submit_job,
     upload_bytes, _status_phase,
 )
+
+
+def _webhook_url_for(request: Request, job_id: int, token: str) -> Optional[str]:
+    """Build the publicly-reachable webhook URL fal should call when the job
+    completes. Returns None for local dev (where fal can't reach 127.0.0.1)."""
+    base = (get_env("APP_URL", "") or "").rstrip("/")
+    if not base:
+        base = f"{request.url.scheme}://{request.url.netloc}".rstrip("/")
+    if base.startswith("http://localhost") or base.startswith("http://127."):
+        return None  # fal can't hit local dev — fall back to polling
+    return f"{base}/webhooks/fal/{job_id}/{token}"
 
 router = APIRouter()
 templates = Jinja2Templates(directory="templates")
@@ -234,6 +247,7 @@ def _serialize_job(job: MediaJob) -> dict:
 @router.post("/api/media/jobs/image")
 async def create_image_job(
     payload: ImageJobCreate,
+    request: Request,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -261,6 +275,7 @@ async def create_image_job(
     cost = int(model["credits"])
     credits_spend(db, user, cost, reason="image_gen", detail=f"model={model['key']}")
 
+    webhook_token = py_secrets.token_urlsafe(24)
     job = MediaJob(
         user_id=user.id,
         kind="image",
@@ -272,6 +287,7 @@ async def create_image_job(
         aspect_ratio=payload.aspect_ratio,
         status="queued",
         cost_credits=cost,
+        webhook_token=webhook_token,
     )
     db.add(job)
     db.commit()
@@ -284,12 +300,13 @@ async def create_image_job(
             aspect_ratio=payload.aspect_ratio,
             resolution=payload.resolution,
         )
-        request_id = await submit_job(model["endpoint"], fal_payload)
+        webhook_url = _webhook_url_for(request, job.id, webhook_token)
+        request_id = await submit_job(model["endpoint"], fal_payload, webhook_url=webhook_url)
         job.fal_request_id = request_id
         job.status = "running"
         db.commit()
         log_action(db, user, "CREATE", "MediaJob", str(job.id),
-                   detail=f"image submit endpoint={model['endpoint']} req={request_id}")
+                   detail=f"image submit endpoint={model['endpoint']} req={request_id} webhook={'yes' if webhook_url else 'no'}")
     except HTTPException:
         _refund_and_fail(db, user, job, "fal submission failed (HTTPException)")
         raise
@@ -380,6 +397,7 @@ class VideoJobCreate(BaseModel):
 @router.post("/api/media/jobs/video")
 async def create_video_job(
     payload: VideoJobCreate,
+    request: Request,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -396,6 +414,7 @@ async def create_video_job(
     cost = int(model["credits"])
     credits_spend(db, user, cost, reason="video_gen", detail=f"model={model['key']}")
 
+    webhook_token = py_secrets.token_urlsafe(24)
     job = MediaJob(
         user_id=user.id,
         kind="video",
@@ -408,6 +427,7 @@ async def create_video_job(
         duration_seconds=payload.duration_seconds,
         status="queued",
         cost_credits=cost,
+        webhook_token=webhook_token,
     )
     db.add(job)
     db.commit()
@@ -423,12 +443,13 @@ async def create_video_job(
             resolution=payload.resolution,
             generate_audio=payload.generate_audio,
         )
-        request_id = await submit_job(model["endpoint"], fal_payload)
+        webhook_url = _webhook_url_for(request, job.id, webhook_token)
+        request_id = await submit_job(model["endpoint"], fal_payload, webhook_url=webhook_url)
         job.fal_request_id = request_id
         job.status = "running"
         db.commit()
         log_action(db, user, "CREATE", "MediaJob", str(job.id),
-                   detail=f"video submit endpoint={model['endpoint']} req={request_id}")
+                   detail=f"video submit endpoint={model['endpoint']} req={request_id} webhook={'yes' if webhook_url else 'no'}")
     except HTTPException:
         _refund_and_fail(db, user, job, "fal submission failed (HTTPException)")
         raise
@@ -438,6 +459,62 @@ async def create_video_job(
 
     db.refresh(job)
     return _serialize_job(job)
+
+
+# --------------------------------------------------------------------------- #
+# Webhook receiver — fal calls this on completion (replaces polling round-trips)
+# --------------------------------------------------------------------------- #
+
+@router.post("/webhooks/fal/{job_id}/{token}")
+async def fal_webhook(
+    job_id: int,
+    token: str,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """fal POSTs the result here when a job finishes. Token in the URL path
+    authenticates the callback (job_ids are sequential; the per-job random
+    token blocks guessing)."""
+    job = db.query(MediaJob).filter(
+        MediaJob.id == job_id,
+        MediaJob.webhook_token == token,
+    ).first()
+    if not job:
+        # Avoid leaking whether the job exists vs the token is wrong.
+        raise HTTPException(status_code=404, detail="Not found")
+
+    if job.status in ("done", "failed", "cancelled"):
+        return {"ok": True, "noop": True}
+
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+
+    # fal's webhook payload shape: {status: "OK" | "ERROR", request_id, payload: {...the model result...}, error: str|None}
+    status = (payload.get("status") or "").upper()
+    body = payload.get("payload") or {}
+
+    if status == "OK":
+        try:
+            if job.kind == "video":
+                url = extract_video_url(body)
+            else:
+                url = extract_first_image_url(body)
+            job.result_url = url
+            job.thumbnail_url = url
+            job.status = "done"
+            job.completed_at = datetime.utcnow()
+            db.commit()
+            log_action(db, job.user, "UPDATE", "MediaJob", str(job.id),
+                       detail="completed via webhook")
+        except Exception as e:
+            _refund_and_fail(db, job.user, job, f"webhook result parse failed: {e}")
+    elif status == "ERROR":
+        err = payload.get("error") or "fal reported ERROR"
+        _refund_and_fail(db, job.user, job, str(err))
+
+    return {"ok": True}
 
 
 @router.get("/api/media/jobs")
