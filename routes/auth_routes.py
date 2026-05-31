@@ -12,6 +12,7 @@ from auth import (
 )
 from database import get_db
 from models import User, log_action
+from services.csrf import get_or_create_token, verify_csrf
 from services.email_utils import send_email_verification, send_password_reset
 from services.env_config import get_env
 from services.flash import set_flash
@@ -42,7 +43,8 @@ def trigger_verification_email(db: Session, user: User, base_url: str) -> bool:
 
 @router.get("/login")
 async def login_page(request: Request):
-    return templates.TemplateResponse(request, "login.html", { "error": None})
+    return templates.TemplateResponse(request, "login.html",
+                                       {"error": None, "csrf_token": get_or_create_token(request)})
 
 
 @router.post("/login")
@@ -51,6 +53,7 @@ async def login_submit(
     username: str = Form(...),
     password: str = Form(...),
     db: Session = Depends(get_db),
+    _csrf: None = Depends(verify_csrf),
 ):
     user = (
         db.query(User)
@@ -61,14 +64,14 @@ async def login_submit(
         return templates.TemplateResponse(
             request,
             "login.html",
-            { "error": "Invalid username or password."},
+            { "error": "Invalid username or password.", "csrf_token": get_or_create_token(request)},
             status_code=401,
         )
     if not user.is_active:
         return templates.TemplateResponse(
             request,
             "login.html",
-            { "error": "Account disabled."},
+            { "error": "Account disabled.", "csrf_token": get_or_create_token(request)},
             status_code=403,
         )
 
@@ -84,7 +87,8 @@ async def login_submit(
 
 @router.get("/signup")
 async def signup_page(request: Request):
-    return templates.TemplateResponse(request, "signup.html", { "error": None})
+    return templates.TemplateResponse(request, "signup.html",
+                                       {"error": None, "csrf_token": get_or_create_token(request)})
 
 
 @router.post("/signup")
@@ -94,24 +98,26 @@ async def signup_submit(
     email: str = Form(...),
     password: str = Form(...),
     db: Session = Depends(get_db),
+    _csrf: None = Depends(verify_csrf),
 ):
     for err in (validate_username(username), validate_email(email), validate_password(password)):
         if err:
             return templates.TemplateResponse(
-                request, "signup.html", { "error": err}, status_code=400,
+                request, "signup.html",
+                { "error": err, "csrf_token": get_or_create_token(request)}, status_code=400,
             )
     if db.query(User).filter(User.username == username).first():
         return templates.TemplateResponse(
             request,
             "signup.html",
-            { "error": "Username already taken."},
+            { "error": "Username already taken.", "csrf_token": get_or_create_token(request)},
             status_code=400,
         )
     if db.query(User).filter(User.email == email).first():
         return templates.TemplateResponse(
             request,
             "signup.html",
-            { "error": "Email already registered."},
+            { "error": "Email already registered.", "csrf_token": get_or_create_token(request)},
             status_code=400,
         )
 
@@ -171,12 +177,14 @@ async def verify_email_page(request: Request, token: str = "",
         return templates.TemplateResponse(
             request, "verify_email.html",
             {"error": "This verification link is invalid or has expired.",
-             "token": "", "done": False, "email": ""},
+             "token": "", "done": False, "email": "",
+             "csrf_token": get_or_create_token(request)},
             status_code=400,
         )
     return templates.TemplateResponse(request, "verify_email.html",
                                        {"error": None, "token": token,
-                                        "done": False, "email": user.email})
+                                        "done": False, "email": user.email,
+                                        "csrf_token": get_or_create_token(request)})
 
 
 @router.post("/verify-email")
@@ -184,13 +192,15 @@ async def verify_email_submit(
     request: Request,
     token: str = Form(...),
     db: Session = Depends(get_db),
+    _csrf: None = Depends(verify_csrf),
 ):
     user = _validate_verify_token(db, token)
     if not user:
         return templates.TemplateResponse(
             request, "verify_email.html",
             {"error": "This verification link is invalid or has expired.",
-             "token": "", "done": False, "email": ""},
+             "token": "", "done": False, "email": "",
+             "csrf_token": get_or_create_token(request)},
             status_code=400,
         )
 
@@ -204,7 +214,8 @@ async def verify_email_submit(
     access = create_access_token(user.id)
     response = templates.TemplateResponse(
         request, "verify_email.html",
-        {"error": None, "token": "", "done": True, "email": user.email},
+        {"error": None, "token": "", "done": True, "email": user.email,
+         "csrf_token": get_or_create_token(request)},
     )
     response.set_cookie(
         key=COOKIE_NAME, value=access, httponly=True, samesite="lax", max_age=TOKEN_TTL_MINUTES * 60,
@@ -226,7 +237,8 @@ def _app_url(request: Request) -> str:
 @router.get("/forgot-password")
 async def forgot_password_page(request: Request):
     return templates.TemplateResponse(request, "forgot_password.html",
-                                       {"error": None, "sent": False})
+                                       {"error": None, "sent": False,
+                                        "csrf_token": get_or_create_token(request)})
 
 
 @router.post("/forgot-password")
@@ -234,6 +246,7 @@ async def forgot_password_submit(
     request: Request,
     email: str = Form(...),
     db: Session = Depends(get_db),
+    _csrf: None = Depends(verify_csrf),
 ):
     # Always render the same "if an account exists…" message — don't leak who's registered.
     user = db.query(User).filter(User.email == email.strip().lower()).first()
@@ -248,7 +261,8 @@ async def forgot_password_submit(
         log_action(db, user, "PASSWORD_RESET_REQUEST", "User", str(user.id))
 
     return templates.TemplateResponse(request, "forgot_password.html",
-                                       {"error": None, "sent": True})
+                                       {"error": None, "sent": True,
+                                        "csrf_token": get_or_create_token(request)})
 
 
 def _validate_reset_token(db: Session, token: str):
@@ -270,11 +284,12 @@ async def reset_password_page(request: Request, token: str = "",
         return templates.TemplateResponse(
             request, "reset_password.html",
             {"error": "This reset link is invalid or has expired.",
-             "token": "", "done": False},
+             "token": "", "done": False, "csrf_token": get_or_create_token(request)},
             status_code=400,
         )
     return templates.TemplateResponse(request, "reset_password.html",
-                                       {"error": None, "token": token, "done": False})
+                                       {"error": None, "token": token, "done": False,
+                                        "csrf_token": get_or_create_token(request)})
 
 
 @router.post("/reset-password")
@@ -283,13 +298,14 @@ async def reset_password_submit(
     token: str = Form(...),
     password: str = Form(...),
     db: Session = Depends(get_db),
+    _csrf: None = Depends(verify_csrf),
 ):
     user = _validate_reset_token(db, token)
     if not user:
         return templates.TemplateResponse(
             request, "reset_password.html",
             {"error": "This reset link is invalid or has expired.",
-             "token": "", "done": False},
+             "token": "", "done": False, "csrf_token": get_or_create_token(request)},
             status_code=400,
         )
 
@@ -297,7 +313,8 @@ async def reset_password_submit(
     if err:
         return templates.TemplateResponse(
             request, "reset_password.html",
-            {"error": err, "token": token, "done": False},
+            {"error": err, "token": token, "done": False,
+             "csrf_token": get_or_create_token(request)},
             status_code=400,
         )
 
@@ -308,4 +325,5 @@ async def reset_password_submit(
     log_action(db, user, "PASSWORD_RESET", "User", str(user.id))
 
     return templates.TemplateResponse(request, "reset_password.html",
-                                       {"error": None, "token": "", "done": True})
+                                       {"error": None, "token": "", "done": True,
+                                        "csrf_token": get_or_create_token(request)})

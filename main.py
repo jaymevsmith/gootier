@@ -13,6 +13,7 @@ load_dotenv()
 from models import init_db  # noqa: E402  (load env first)
 from routes import admin_routes, auth_routes, media_routes, oauth_routes, stripe_routes, web_routes
 from routes.api_routes import router as api_router
+from services.csrf import CSRFCookieMiddleware
 from services.scheduler import scheduler_loop
 
 logging.basicConfig(level=logging.INFO)
@@ -39,6 +40,8 @@ if origins:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+app.add_middleware(CSRFCookieMiddleware)
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
 

@@ -22,6 +22,7 @@
 
     <form method="post" action="/verify-email">
       <input type="hidden" name="token" value="{{ token }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <button type="submit" class="btn tj-grad-btn w-100">Confirm email</button>
     </form>
 
