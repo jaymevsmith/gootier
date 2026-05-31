@@ -1,0 +1,277 @@
+/* ============================================================
+   GOOTIER — "Aurora" sleek theme  (load AFTER gootier.css)
+   A dark, glassy, glow-forward re-skin of the same component
+   classes. Deep canvas + frosted panels + the indigo→purple
+   gradient used as light. Technological, modern, inviting.
+   ============================================================ */
+
+:root {
+  /* Retone the shared tokens — most components inherit for free */
+  --g-bg:           #07080d;
+  --g-bg-elev:      #0e1018;
+  --g-surface:      rgba(255,255,255,.045);
+  --g-surface-sunk: rgba(255,255,255,.025);
+  --g-sidebar:      rgba(10,12,20,.6);
+  --g-sidebar-2:    rgba(255,255,255,.04);
+  --g-border:       rgba(255,255,255,.12);
+  --g-border-soft:  rgba(255,255,255,.08);
+
+  --g-text:         #eef0f8;
+  --g-text-2:       #aab1c8;
+  --g-text-3:       #717892;
+  --g-text-inv:     #eef0f8;
+
+  --g-primary:      #8b9bff;   /* lifted for dark contrast */
+  --g-primary-2:    #b89cff;
+
+  /* Brighter status inks readable on dark tint chips */
+  --g-success-ink:  #3ee9a8;
+  --g-warning-ink:  #fbbf5c;
+  --g-danger-ink:   #fb7185;
+  --g-info-ink:     #6ba6ff;
+
+  --g-grad:         linear-gradient(135deg, #6f8bff 0%, #a06bff 60%, #d36bff 100%);
+  --g-glow:         0 10px 40px -8px rgba(126,107,255,.55);
+
+  --g-shadow-sm: 0 1px 2px rgba(0,0,0,.4);
+  --g-shadow:    0 2px 10px rgba(0,0,0,.35);
+  --g-shadow-md: 0 12px 36px rgba(0,0,0,.45);
+  --g-shadow-lg: 0 40px 90px rgba(0,0,0,.6);
+}
+
+/* ---- Canvas: deep space with aurora auras ----------------- */
+html, body {
+  background: #07080d;
+  color: var(--g-text);
+}
+body::before {
+  content: "";
+  position: fixed; inset: 0; z-index: 0; pointer-events: none;
+  background:
+    radial-gradient(60% 50% at 18% -5%, rgba(111,139,255,.22), transparent 60%),
+    radial-gradient(55% 45% at 100% 0%, rgba(208,107,255,.16), transparent 55%),
+    radial-gradient(50% 50% at 50% 110%, rgba(160,107,255,.12), transparent 60%);
+}
+body::after {
+  /* fine technical dot-grid, very faint */
+  content: "";
+  position: fixed; inset: 0; z-index: 0; pointer-events: none;
+  background-image: radial-gradient(rgba(255,255,255,.045) 1px, transparent 1px);
+  background-size: 28px 28px;
+  mask-image: radial-gradient(120% 90% at 50% 0%, #000 30%, transparent 78%);
+}
+.app-shell, .auth-shell { position: relative; z-index: 1; }
+
+a { color: var(--g-primary); }
+a:hover { color: var(--g-primary-2); }
+
+/* ---- Sidebar: frosted glass column ------------------------ */
+.app-sidebar {
+  background: linear-gradient(180deg, rgba(255,255,255,.05), rgba(255,255,255,.02));
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  border-right: 1px solid rgba(255,255,255,.07);
+}
+.app-sidebar .brand {
+  font-weight: 700;
+  letter-spacing: -.01em;
+}
+.app-sidebar .nav-section-label {
+  font-family: var(--g-font-mono);
+  font-size: .62rem;
+  letter-spacing: .22em;
+  color: #626a86;
+}
+.app-sidebar nav a {
+  color: rgba(238,240,248,.66);
+  border: 1px solid transparent;
+  transition: background .18s ease, color .18s ease, border-color .18s ease;
+}
+.app-sidebar nav a:hover { background: rgba(255,255,255,.05); color: #fff; }
+.app-sidebar nav a.active {
+  color: #fff;
+  background: linear-gradient(135deg, rgba(111,139,255,.28), rgba(160,107,255,.20));
+  border-color: rgba(160,150,255,.35);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.10), 0 6px 18px -8px rgba(126,107,255,.6);
+}
+.app-sidebar nav a.active i { color: #cdd4ff; }
+.sidebar-footer { border-top-color: rgba(255,255,255,.07); }
+.user-card-link:hover { background: rgba(255,255,255,.05); }
+.user-meta-tier { color: var(--g-text-3); }
+.sidebar-footer .signout { color: rgba(238,240,248,.5); }
+.sidebar-footer .signout:hover { background: rgba(255,255,255,.05); color:#fff; }
+
+/* ---- Headers & eyebrows: mono-tech labels ----------------- */
+.page-header .eyebrow,
+.tj-eyebrow {
+  font-family: var(--g-font-mono);
+  letter-spacing: .2em;
+  color: var(--g-primary);
+  opacity: .9;
+}
+.page-header h1 { color: var(--g-text); }
+.page-header .lede { color: var(--g-text-2); }
+.app-footer { border-top-color: rgba(255,255,255,.07); color: var(--g-text-3); }
+
+/* ---- Glass cards (dark-glass fill; no backdrop-filter — it
+   composites to nothing on in-flow elements in this engine) --- */
+.card-x, .card, .stat-card, .tier-card, .empty-state {
+  background:
+    linear-gradient(180deg, rgba(255,255,255,.07), rgba(255,255,255,.02)),
+    rgba(16,18,26,.72);
+  border: 1px solid rgba(255,255,255,.10);
+  box-shadow: var(--g-shadow), inset 0 1px 0 rgba(255,255,255,.06);
+}
+.card-x-header { border-bottom-color: rgba(255,255,255,.07); }
+.card-x-header h6 { color: var(--g-text); }
+.card-x-footer { background: rgba(255,255,255,.02); border-top-color: rgba(255,255,255,.07); }
+
+.stat-card { transition: transform .18s ease, box-shadow .18s ease, border-color .18s ease; }
+.stat-card:hover {
+  transform: translateY(-3px);
+  border-color: rgba(160,150,255,.32);
+  box-shadow: var(--g-shadow-md), inset 0 1px 0 rgba(255,255,255,.08), 0 0 0 1px rgba(126,107,255,.10);
+}
+.stat-icon { box-shadow: inset 0 0 0 1px rgba(255,255,255,.06); }
+.stat-value { color: var(--g-text); }
+.stat-label, .small-meta, .text-muted { color: var(--g-text-3) !important; }
+
+/* ---- Buttons: glow CTA + glass soft ----------------------- */
+.btn.tj-grad-btn {
+  background: var(--g-grad);
+  box-shadow: var(--g-glow);
+  border: 1px solid rgba(255,255,255,.18);
+}
+.btn.tj-grad-btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 16px 50px -8px rgba(126,107,255,.7);
+}
+.btn-soft {
+  background: rgba(255,255,255,.07);
+  border: 1px solid rgba(255,255,255,.12);
+  color: var(--g-text);
+}
+.btn-soft:hover { background: rgba(255,255,255,.12); color: #fff; }
+.btn-primary { background: rgba(111,139,255,.9); border-color: transparent; }
+.btn-primary:hover { background: #6f8bff; }
+.btn-outline-primary { color: var(--g-primary); border-color: rgba(160,150,255,.5); }
+.btn-outline-primary:hover { background: rgba(111,139,255,.18); color:#fff; }
+.btn:focus { box-shadow: 0 0 0 .2rem rgba(126,107,255,.35); }
+
+/* ---- Highlight pills (brighter inks, glassy bg) ----------- */
+.hl-success { background: rgba(16,185,129,.16); color: var(--g-success-ink); }
+.hl-warning { background: rgba(245,158,11,.18); color: var(--g-warning-ink); }
+.hl-danger  { background: rgba(239,68,68,.16);  color: var(--g-danger-ink); }
+.hl-info    { background: rgba(59,130,246,.18); color: var(--g-info-ink); }
+.hl-indigo  { background: rgba(124,150,255,.18); color: #b9c2ff; }
+.hl-purple  { background: rgba(176,107,255,.20); color: #d6c2ff; }
+.hl-muted   { background: rgba(255,255,255,.07); color: var(--g-text-2); }
+
+/* ---- Forms ------------------------------------------------ */
+.form-control, .form-select {
+  background: rgba(255,255,255,.04);
+  border-color: rgba(255,255,255,.12);
+  color: var(--g-text);
+}
+.form-control::placeholder { color: var(--g-text-3); }
+.form-control:focus, .form-select:focus {
+  background: rgba(255,255,255,.06);
+  border-color: rgba(160,150,255,.6);
+  box-shadow: 0 0 0 .18rem rgba(126,107,255,.28);
+  color: var(--g-text);
+}
+.form-select option { background: #14171f; color: var(--g-text); }
+.form-label { color: var(--g-text-2); }
+.form-text { color: var(--g-text-3); }
+.form-check-input { background-color: rgba(255,255,255,.08); border-color: rgba(255,255,255,.22); }
+.form-check-input:checked { background-color: var(--g-primary); border-color: var(--g-primary); }
+.form-check-label { color: var(--g-text-2); }
+
+/* ---- Tables ----------------------------------------------- */
+.table-x { background: transparent; }
+.table-x thead th {
+  background: rgba(255,255,255,.03);
+  color: var(--g-text-3);
+  border-bottom-color: rgba(255,255,255,.08);
+  font-family: var(--g-font-mono); letter-spacing: .14em;
+}
+.table-x tbody td { border-bottom-color: rgba(255,255,255,.06); color: var(--g-text); }
+.table-x tbody tr:hover { background: rgba(255,255,255,.04); }
+
+/* ---- Empty state ------------------------------------------ */
+.empty-state { border: 1px dashed rgba(255,255,255,.14); }
+.empty-state h5 { color: var(--g-text); }
+.empty-state p { color: var(--g-text-2); }
+.empty-icon {
+  background: linear-gradient(135deg, rgba(111,139,255,.22), rgba(208,107,255,.18));
+  color: #cdd4ff;
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,.08), 0 8px 30px -10px rgba(126,107,255,.6);
+}
+
+/* ---- Tier cards ------------------------------------------- */
+.tier-card .tier-name, .tier-card .tier-price { color: var(--g-text); }
+.tier-card .tier-blurb, .tier-card ul.features li { color: var(--g-text-2); }
+.tier-card.featured {
+  border: 1px solid transparent;
+  background:
+    linear-gradient(180deg, rgba(255,255,255,.07), rgba(255,255,255,.03)) padding-box,
+    var(--g-grad) border-box;
+  box-shadow: var(--g-shadow-md), 0 0 40px -12px rgba(126,107,255,.55);
+}
+
+/* ---- Auth split-screen ------------------------------------ */
+.auth-shell { background: #07080d; }
+.auth-hero {
+  background:
+    radial-gradient(80% 60% at 20% 10%, rgba(208,107,255,.45), transparent 60%),
+    var(--g-grad);
+}
+.auth-hero .brand-mark { letter-spacing: -.01em; }
+.auth-form-pane { background: transparent; }
+.auth-form h3 { color: var(--g-text); }
+.auth-form .sub { color: var(--g-text-2); }
+.auth-form .form-control { background: rgba(255,255,255,.05); }
+
+/* ---- Calendar (opaque surfaces for crisp contrast) -------- */
+.cal-month-label { color: var(--g-text); }
+.calendar-grid { background: #23262f; border: 1px solid rgba(255,255,255,.10); box-shadow: var(--g-shadow-md); }
+.calendar-head { background: #141620; color: var(--g-text-3); font-family: var(--g-font-mono); letter-spacing:.16em; }
+.calendar-day { background: #0e1019; }
+.calendar-day.outside, .calendar-day.past { background: #0a0b12; }
+.calendar-day.outside .day-num, .calendar-day.past .day-num { color: var(--g-text-3); }
+.day-num { color: #c7ccdd; }
+.calendar-day.today { background: linear-gradient(180deg, rgba(111,139,255,.20), #0e1019 65%); }
+.calendar-day.today .day-num { background: var(--g-grad); color:#fff; }
+.day-count { background: rgba(255,255,255,.08); border-color: rgba(255,255,255,.12); color: var(--g-text-2); }
+.cal-item-social { background: rgba(176,107,255,.18); color: #d6c2ff; }
+.cal-item-email  { background: rgba(245,158,11,.18); color: #fbbf5c; }
+.cal-item.cal-status-published, .cal-item.cal-status-sent { background: rgba(16,185,129,.16); color: var(--g-success-ink); }
+.cal-item.cal-status-failed { background: rgba(239,68,68,.16); color: var(--g-danger-ink); }
+.cal-item.cal-status-cancelled { background: rgba(255,255,255,.05); color: var(--g-text-3); text-decoration-color: rgba(255,255,255,.3); }
+.calendar-day.drag-over { background: rgba(111,139,255,.16); outline-color: var(--g-primary); }
+
+/* ---- Modal / toast ---------------------------------------- */
+.modal-content, .cal-modal {
+  background: rgba(20,23,32,.86) !important;
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  border: 1px solid rgba(255,255,255,.12);
+  color: var(--g-text);
+}
+.modal-header, .modal-footer { border-color: rgba(255,255,255,.08); }
+.modal-title { color: var(--g-text); }
+.btn-close { filter: invert(1) grayscale(1) brightness(1.6); opacity: .6; }
+.tj-toast {
+  background: rgba(20,23,32,.9);
+  border: 1px solid rgba(255,255,255,.1);
+  color: var(--g-text);
+  backdrop-filter: blur(18px);
+}
+.tj-toast-close { color: var(--g-text-3); }
+.tj-toast-close:hover { background: rgba(255,255,255,.08); color: #fff; }
+
+/* ---- Alerts ----------------------------------------------- */
+.alert-secondary { background: rgba(255,255,255,.05); color: var(--g-text-2); border-color: rgba(255,255,255,.08); }
+.alert-success { background: rgba(16,185,129,.12); color: var(--g-success-ink); border-color: rgba(16,185,129,.25); }
+.alert-warning { background: rgba(245,158,11,.12); color: var(--g-warning-ink); border-color: rgba(245,158,11,.25); }
+.alert-danger  { background: rgba(239,68,68,.12);  color: var(--g-danger-ink);  border-color: rgba(239,68,68,.25); }

@@ -6,9 +6,17 @@
   <title>{% block title %}Gootier{% endblock %}</title>
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+  {# Token layer first (colors / type roles / semantic vars) — the component
+     stylesheet that follows consumes the same --g-* vars, so any Aurora retones
+     cascade for free. #}
+  <link rel="stylesheet" href="/static/css/colors_and_type.css">
   <link rel="stylesheet" href="/static/css/design-system.css">
+  {# Aurora dark theme — opt-in via a `gootier_theme=aurora` cookie. #}
+  {% if request.cookies.get('gootier_theme') == 'aurora' %}
+  <link rel="stylesheet" href="/static/css/gootier-sleek.css">
+  {% endif %}
 </head>
-<body>
+<body data-theme="{{ 'aurora' if request.cookies.get('gootier_theme') == 'aurora' else 'light' }}">
 
 <a href="#main-content" class="skip-link">Skip to main content</a>
 
@@ -51,6 +59,11 @@
     </nav>
 
     <div class="sidebar-footer">
+      <button type="button" class="signout" id="theme-toggle"
+              aria-label="Toggle Aurora dark theme">
+        <i class="fas" id="theme-toggle-icon" aria-hidden="true"></i>
+        <span id="theme-toggle-label"></span>
+      </button>
       <a href="/profile" class="user-card user-card-link" aria-label="View your profile">
         <div class="user-avatar" aria-hidden="true">{{ ((user.nickname[:1] if user.nickname else user.username[:1]) if user else '?')|upper }}</div>
         <div class="flex-grow-1 min-width-0">
@@ -83,6 +96,22 @@
   btn?.addEventListener('click', () => {
     const opened = sidebar.classList.toggle('open');
     btn.setAttribute('aria-expanded', opened ? 'true' : 'false');
+  });
+
+  // Theme toggle (Aurora dark <-> light)
+  const themeBtn = document.getElementById('theme-toggle');
+  const themeIcon = document.getElementById('theme-toggle-icon');
+  const themeLabel = document.getElementById('theme-toggle-label');
+  function paintThemeToggle() {
+    const isAurora = document.body.dataset.theme === 'aurora';
+    if (themeIcon) themeIcon.className = `fas ${isAurora ? 'fa-sun' : 'fa-moon'} me-2`;
+    if (themeLabel) themeLabel.textContent = isAurora ? 'Light theme' : 'Aurora theme';
+  }
+  paintThemeToggle();
+  themeBtn?.addEventListener('click', () => {
+    const next = document.body.dataset.theme === 'aurora' ? 'light' : 'aurora';
+    document.cookie = `gootier_theme=${next}; Path=/; Max-Age=${60*60*24*365}; SameSite=Lax`;
+    location.reload();
   });
 </script>
 {% block scripts %}{% endblock %}

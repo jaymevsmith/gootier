@@ -1,0 +1,171 @@
+/* ============================================================
+   GOOTIER — Colors & Type foundations
+   Source of truth: Gootier/static/css/design-system.css
+   Light page surface + dark sidebar chrome. SaaS-grade.
+   Load this file, then build with the base + semantic tokens below.
+   ============================================================ */
+
+:root {
+  /* ---- Brand ---------------------------------------------- */
+  --g-primary:      #5b6ee1;   /* indigo — primary actions, links, active nav */
+  --g-primary-ink:  #4a5fd6;   /* indigo pressed/hover */
+  --g-primary-2:    #7b5be1;   /* purple — secondary accent, link hover */
+  --g-grad:         linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  --g-grad-soft:    linear-gradient(135deg, rgba(102,126,234,.10) 0%, rgba(118,75,162,.10) 100%);
+
+  /* ---- Neutrals / surfaces -------------------------------- */
+  --g-bg:           #f5f6fa;   /* app page background */
+  --g-bg-elev:      #ffffff;
+  --g-surface:      #ffffff;   /* cards, tables, panels */
+  --g-surface-sunk: #fafbfd;   /* table heads, footers, inset wells */
+  --g-sidebar:      #0f1117;   /* dark chrome — sidebar, btn-dark */
+  --g-sidebar-2:    #181b25;
+  --g-border:       #e5e7ef;   /* form controls, dividers */
+  --g-border-soft:  #eef0f6;   /* card borders, hairlines */
+
+  /* ---- Text ----------------------------------------------- */
+  --g-text:         #161a2c;   /* primary ink */
+  --g-text-2:       #4b5168;   /* secondary / lede / body muted */
+  --g-text-3:       #8a90a6;   /* tertiary / meta / eyebrow */
+  --g-text-inv:     #f5f6fa;   /* on dark chrome */
+
+  /* ---- Status -------------------------------------------- */
+  --g-success:      #10b981;
+  --g-warning:      #f59e0b;
+  --g-danger:       #ef4444;
+  --g-info:         #3b82f6;
+
+  /* On-light status ink (for pill text / table text) */
+  --g-success-ink:  #0e7c5a;
+  --g-warning-ink:  #8a5a08;
+  --g-danger-ink:   #b1342f;
+  --g-info-ink:     #1d4ed8;
+
+  /* ---- Tint backgrounds (status pills, icon tiles) -------- */
+  --g-tint-indigo:  rgba(91,110,225,.10);
+  --g-tint-purple:  rgba(123,91,225,.10);
+  --g-tint-success: rgba(16,185,129,.12);
+  --g-tint-warning: rgba(245,158,11,.14);
+  --g-tint-danger:  rgba(239,68,68,.12);
+  --g-tint-info:    rgba(59,130,246,.12);
+  --g-tint-muted:   #eef0f6;
+
+  /* Brand social colors (used with Font Awesome fab icons) */
+  --g-facebook:  #1877f2;
+  --g-instagram: #e1306c;
+  --g-twitter:   #000000;
+  --g-linkedin:  #0a66c2;
+  --g-tiktok:    #000000;
+
+  /* ============================================================
+     TYPE  — no webfont; native system stack by design.
+     ============================================================ */
+  --g-font:       -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+                  "Helvetica Neue", Arial, sans-serif;
+  --g-font-mono:  ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+                  "Liberation Mono", monospace;
+
+  --g-fw-regular: 400;   /* body */
+  --g-fw-medium:  500;   /* buttons, nav */
+  --g-fw-semi:    600;   /* labels, card titles, fw-semibold */
+  --g-fw-bold:    700;   /* headings, stat values, hl pills */
+
+  /* Type scale (rem) */
+  --g-fs-display: 2rem;     /* big numbers, billing credit balance */
+  --g-fs-h1:      1.55rem;  /* page title */
+  --g-fs-h2:      1.15rem;  /* section / calendar month */
+  --g-fs-h3:      .98rem;   /* card header */
+  --g-fs-body:    .95rem;   /* default body / form controls */
+  --g-fs-sm:      .85rem;   /* small */
+  --g-fs-meta:    .72rem;   /* eyebrow / table head / pill */
+
+  /* ---- Spacing & radii ------------------------------------ */
+  --g-radius-sm:  6px;    /* pills-ish, small chips */
+  --g-radius-md:  10px;   /* buttons, form controls */
+  --g-radius-lg:  14px;   /* cards, tables, modals */
+  --g-radius-xl:  18px;
+  --g-radius-pill: 999px;
+
+  --g-shadow-sm: 0 1px 2px rgba(15,23,42,.06);
+  --g-shadow:    0 1px 3px rgba(15,23,42,.07), 0 1px 2px rgba(15,23,42,.04);
+  --g-shadow-md: 0 4px 16px rgba(15,23,42,.08);
+  --g-shadow-lg: 0 20px 50px rgba(15,23,42,.12);
+
+  --g-sidebar-w: 248px;
+
+  /* ---- Motion --------------------------------------------- */
+  --g-ease:      ease;
+  --g-dur-fast:  .15s;
+  --g-dur:       .2s;
+  --g-dur-slow:  .3s;
+}
+
+/* ============================================================
+   BASE — apply the foundations to the document.
+   ============================================================ */
+html, body {
+  background: var(--g-bg);
+  color: var(--g-text);
+  font-family: var(--g-font);
+  font-size: 16px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+* { box-sizing: border-box; }
+
+a { color: var(--g-primary); text-decoration: none; }
+a:hover { color: var(--g-primary-2); text-decoration: underline; }
+
+code, kbd, samp, .font-monospace { font-family: var(--g-font-mono); }
+
+/* ============================================================
+   SEMANTIC TYPE ROLES — use these instead of bare sizes.
+   ============================================================ */
+.g-eyebrow {
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  font-size: var(--g-fs-meta);
+  font-weight: var(--g-fw-semi);
+  color: var(--g-text-3);
+}
+.g-h1 {
+  font-size: var(--g-fs-h1);
+  font-weight: var(--g-fw-bold);
+  letter-spacing: -.015em;
+  line-height: 1.2;
+  margin: 0;
+}
+.g-lede {
+  color: var(--g-text-2);
+  font-size: var(--g-fs-body);
+  margin: 0;
+}
+.g-h2 {
+  font-size: var(--g-fs-h2);
+  font-weight: var(--g-fw-bold);
+  letter-spacing: -.01em;
+}
+.g-card-title {
+  font-size: var(--g-fs-h3);
+  font-weight: var(--g-fw-semi);
+  margin: 0;
+}
+.g-display {
+  font-size: var(--g-fs-display);
+  font-weight: var(--g-fw-bold);
+  letter-spacing: -.02em;
+  line-height: 1;
+}
+.g-meta {
+  font-size: var(--g-fs-sm);
+  color: var(--g-text-3);
+}
+.g-mono { font-family: var(--g-font-mono); }
+
+/* Gradient wordmark / accents */
+.g-grad-text {
+  background: var(--g-grad);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
