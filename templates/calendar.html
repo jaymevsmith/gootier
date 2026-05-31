@@ -152,15 +152,39 @@ document.querySelectorAll('.cal-item').forEach(el => {
   el.addEventListener('keydown', e => { if (e.key === 'Enter') openItem(el); });
 });
 
-/* ---------- Drag-to-reschedule ---------- */
+/* ---------- Drag-to-reschedule (mouse + touch) ----------
+   HTML5 D&D handles mouse/trackpad on desktop. For touch devices we add
+   a pointer-event polyfill that long-presses to start a drag, follows
+   the finger, and releases onto whichever .calendar-day is under it. */
 let dragSource = null;
+let touchGhost = null;
+let touchDragging = false;
+let touchHoldTimer = null;
+const TOUCH_HOLD_MS = 300;
+
+function _clearTouchGhost() {
+  if (touchGhost && touchGhost.parentNode) touchGhost.parentNode.removeChild(touchGhost);
+  touchGhost = null;
+}
+
+function _dayUnderPoint(x, y) {
+  // touchmove doesn't fire the standard dragenter, so we hit-test manually.
+  const el = document.elementFromPoint(x, y);
+  return el ? el.closest('.calendar-day') : null;
+}
+
+function _highlight(cell) {
+  document.querySelectorAll('.calendar-day.drag-over').forEach(d => d.classList.remove('drag-over'));
+  if (cell && !cell.classList.contains('past')) cell.classList.add('drag-over');
+}
 
 document.querySelectorAll('.cal-item').forEach(el => {
+  // Desktop HTML5 D&D
   el.addEventListener('dragstart', (e) => {
+    if (el.getAttribute('draggable') !== 'true') return;
     dragSource = el;
     el.classList.add('cal-item-dragging');
     e.dataTransfer.effectAllowed = 'move';
-    // Some browsers require setData
     e.dataTransfer.setData('text/plain', el.dataset.id);
   });
   el.addEventListener('dragend', () => {
@@ -168,7 +192,97 @@ document.querySelectorAll('.cal-item').forEach(el => {
     document.querySelectorAll('.calendar-day.drag-over').forEach(d => d.classList.remove('drag-over'));
     dragSource = null;
   });
+
+  // Mobile / touchscreen: long-press to start a drag, follow finger, drop on release
+  el.addEventListener('touchstart', (e) => {
+    if (el.getAttribute('draggable') !== 'true') return;
+    if (e.touches.length !== 1) return;
+    touchHoldTimer = setTimeout(() => {
+      touchHoldTimer = null;
+      touchDragging = true;
+      dragSource = el;
+      el.classList.add('cal-item-dragging');
+
+      // Build a ghost element that follows the finger
+      const rect = el.getBoundingClientRect();
+      touchGhost = el.cloneNode(true);
+      Object.assign(touchGhost.style, {
+        position: 'fixed', left: rect.left + 'px', top: rect.top + 'px',
+        width: rect.width + 'px', height: rect.height + 'px',
+        pointerEvents: 'none', opacity: '0.85', zIndex: '9999',
+        boxShadow: '0 8px 24px rgba(0,0,0,.2)', transform: 'scale(1.05)',
+      });
+      document.body.appendChild(touchGhost);
+
+      // Haptic feedback if supported
+      if (window.navigator.vibrate) window.navigator.vibrate(15);
+    }, TOUCH_HOLD_MS);
+  }, { passive: true });
+
+  el.addEventListener('touchmove', (e) => {
+    if (touchHoldTimer) {
+      // User started scrolling before the long-press fired — cancel.
+      clearTimeout(touchHoldTimer);
+      touchHoldTimer = null;
+      return;
+    }
+    if (!touchDragging || e.touches.length !== 1) return;
+    e.preventDefault();  // suppress scroll while dragging
+    const t = e.touches[0];
+    if (touchGhost) {
+      touchGhost.style.left = (t.clientX - touchGhost.offsetWidth / 2) + 'px';
+      touchGhost.style.top  = (t.clientY - touchGhost.offsetHeight / 2) + 'px';
+    }
+    _highlight(_dayUnderPoint(t.clientX, t.clientY));
+  }, { passive: false });
+
+  el.addEventListener('touchend', async (e) => {
+    if (touchHoldTimer) { clearTimeout(touchHoldTimer); touchHoldTimer = null; }
+    if (!touchDragging) return;
+    touchDragging = false;
+    el.classList.remove('cal-item-dragging');
+    _clearTouchGhost();
+
+    const t = e.changedTouches[0];
+    const cell = _dayUnderPoint(t.clientX, t.clientY);
+    document.querySelectorAll('.calendar-day.drag-over').forEach(d => d.classList.remove('drag-over'));
+    if (!cell) { dragSource = null; return; }
+    if (cell.classList.contains('past')) {
+      TJ.notify.warning('Cannot drop into a past day.');
+      dragSource = null;
+      return;
+    }
+    await _doReschedule(cell);
+    dragSource = null;
+  }, { passive: true });
+
+  el.addEventListener('touchcancel', () => {
+    if (touchHoldTimer) { clearTimeout(touchHoldTimer); touchHoldTimer = null; }
+    touchDragging = false;
+    el.classList.remove('cal-item-dragging');
+    _clearTouchGhost();
+    document.querySelectorAll('.calendar-day.drag-over').forEach(d => d.classList.remove('drag-over'));
+    dragSource = null;
+  }, { passive: true });
 });
+
+async function _doReschedule(cell) {
+  if (!dragSource) return;
+  const targetDate = cell.dataset.date;
+  const currentIso = dragSource.dataset.iso;
+  const currentDate = currentIso.slice(0, 10);
+  if (targetDate === currentDate) return;
+  const time = dragSource.dataset.time || '12:00';
+  const iso = new Date(`${targetDate}T${time}:00Z`).toISOString();
+  const kind = dragSource.dataset.kind;
+  const id = dragSource.dataset.id;
+  const url = kind === 'email_blast'
+    ? `/api/email-blasts/${id}/reschedule`
+    : `/api/social/posts/${id}/reschedule`;
+  const data = await TJ.api.patch(url, { scheduled_at: iso },
+    { progress: true, progressLabel: 'Rescheduling…', successMsg: 'Moved' });
+  if (data) setTimeout(() => location.reload(), 400);
+}
 
 document.querySelectorAll('.calendar-day').forEach(cell => {
   cell.addEventListener('dragover', (e) => {
@@ -187,25 +301,7 @@ document.querySelectorAll('.calendar-day').forEach(cell => {
       TJ.notify.warning('Cannot drop into a past day.');
       return;
     }
-
-    const targetDate = cell.dataset.date;            // YYYY-MM-DD
-    const currentIso = dragSource.dataset.iso;       // "YYYY-MM-DD HH:MM UTC"
-    const currentDate = currentIso.slice(0, 10);
-    if (targetDate === currentDate) return;          // dropped on same day
-
-    const time = dragSource.dataset.time || '12:00'; // preserve original time-of-day
-    // Build UTC timestamp from target date + original UTC time
-    const iso = new Date(`${targetDate}T${time}:00Z`).toISOString();
-
-    const kind = dragSource.dataset.kind;
-    const id = dragSource.dataset.id;
-    const url = kind === 'email_blast'
-      ? `/api/email-blasts/${id}/reschedule`
-      : `/api/social/posts/${id}/reschedule`;
-
-    const data = await TJ.api.patch(url, { scheduled_at: iso },
-      { progress: true, progressLabel: 'Rescheduling…', successMsg: 'Moved' });
-    if (data) setTimeout(() => location.reload(), 400);
+    await _doReschedule(cell);
   });
 });
 
