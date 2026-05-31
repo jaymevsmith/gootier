@@ -41,11 +41,19 @@
           <div class="mb-3">
             <label class="form-label d-flex align-items-center">
               <span>Recipients</span>
-              <span class="ms-auto small-meta">One email address per line.</span>
+              <button type="button" class="btn btn-sm btn-soft ms-auto" id="upload-recipients-btn">
+                <i class="fas fa-file-arrow-up me-1"></i>Upload CSV / XLSX / TXT
+              </button>
+              <input type="file" id="recipients-file" class="d-none"
+                     accept=".csv,.txt,.tsv,.xlsx,text/csv,text/plain,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet">
             </label>
             <textarea class="form-control" name="recipients" rows="5" required
                       placeholder="alice@example.com&#10;bob@example.com"></textarea>
-            <div class="form-text"><span id="blast-recipient-count">0</span> recipient(s)</div>
+            <div class="form-text">
+              <span id="blast-recipient-count">0</span> recipient(s) ·
+              <span class="text-muted">One per line, or upload a file (we'll pull emails from any column).</span>
+            </div>
+            <div id="recipients-upload-result" class="mt-2 d-none"></div>
           </div>
 
           <div class="mb-4">
@@ -177,6 +185,120 @@ form.addEventListener('submit', async (e) => {
   });
   restore();
   if (data) setTimeout(() => location.reload(), 600);
+});
+
+/* ---------- Upload-recipients-file flow ---------- */
+const uploadBtn = document.getElementById('upload-recipients-btn');
+const fileInput = document.getElementById('recipients-file');
+const resultBox = document.getElementById('recipients-upload-result');
+
+uploadBtn?.addEventListener('click', () => fileInput?.click());
+
+fileInput?.addEventListener('change', async (e) => {
+  const file = e.target.files?.[0];
+  if (!file) return;
+  if (file.size > 5 * 1024 * 1024) {
+    TJ.notify.warning('That file is over 5 MB. Trim it first.');
+    fileInput.value = '';
+    return;
+  }
+
+  const fd = new FormData();
+  fd.append('file', file);
+
+  TJ.progress.start('Parsing recipients…');
+  let data = null;
+  try {
+    const res = await fetch('/api/email-blasts/parse-recipients', {
+      method: 'POST', body: fd, credentials: 'same-origin',
+    });
+    if (res.status === 401) { window.location.href = '/login'; return; }
+    data = await res.json().catch(() => null);
+    if (!res.ok) {
+      TJ.progress.fail();
+      TJ.notify.error((data && data.detail) || `Upload failed (${res.status})`);
+      fileInput.value = '';
+      return;
+    }
+    TJ.progress.done();
+  } catch (err) {
+    TJ.progress.fail();
+    TJ.notify.error('Network error — check your connection');
+    fileInput.value = '';
+    return;
+  }
+
+  // Build the result panel
+  const validHtml = data.valid_count > 0
+    ? `<div><i class="fas fa-check text-success me-2"></i>
+         <strong>${data.valid_count}</strong> valid email${data.valid_count === 1 ? '' : 's'}
+         from <code>${file.name}</code>
+       </div>`
+    : `<div><i class="fas fa-triangle-exclamation text-warning me-2"></i>
+         No valid emails found in <code>${file.name}</code></div>`;
+
+  const invalidHtml = data.invalid_total > 0
+    ? `<details class="mt-2">
+         <summary class="small text-muted" style="cursor:pointer;">
+           <i class="fas fa-circle-exclamation text-warning me-1"></i>
+           ${data.invalid_total} rejected entr${data.invalid_total === 1 ? 'y' : 'ies'}${data.invalid_truncated ? ' (showing first 50)' : ''}
+         </summary>
+         <div class="small mt-2" style="max-height:200px; overflow-y:auto;">
+           <table class="table-x" style="font-size:.82rem;">
+             <thead><tr><th>Value</th><th>Reason</th></tr></thead>
+             <tbody>
+               ${data.invalid.map(i => `
+                 <tr>
+                   <td class="font-monospace">${i.value.replace(/</g, '&lt;')}</td>
+                   <td>${i.reason}</td>
+                 </tr>`).join('')}
+             </tbody>
+           </table>
+         </div>
+       </details>`
+    : '';
+
+  const mergeBtn = data.valid_count > 0
+    ? `<button type="button" class="btn btn-soft btn-sm mt-2" id="merge-recipients-btn">
+         <i class="fas fa-plus me-1"></i>Add ${data.valid_count} to recipients
+       </button>
+       <button type="button" class="btn btn-soft btn-sm mt-2 ms-1" id="replace-recipients-btn">
+         <i class="fas fa-arrows-rotate me-1"></i>Replace existing
+       </button>`
+    : '';
+
+  resultBox.innerHTML = `
+    <div class="alert ${data.valid_count > 0 ? 'alert-success' : 'alert-warning'} py-2">
+      ${validHtml}
+      ${invalidHtml}
+      ${mergeBtn}
+    </div>`;
+  resultBox.classList.remove('d-none');
+
+  // Wire merge / replace
+  const recipientsEl = form.recipients;
+  document.getElementById('merge-recipients-btn')?.addEventListener('click', () => {
+    const existing = recipientsEl.value
+      .split(/\r?\n/).map(s => s.trim().toLowerCase()).filter(Boolean);
+    const seen = new Set(existing);
+    const merged = [...existing];
+    let added = 0;
+    for (const em of data.valid) {
+      if (!seen.has(em)) { seen.add(em); merged.push(em); added++; }
+    }
+    recipientsEl.value = merged.join('\n');
+    recipientsEl.dispatchEvent(new Event('input', { bubbles: true }));
+    TJ.notify.success(`Added ${added} new email${added === 1 ? '' : 's'} (${data.valid_count - added} were already in the list).`);
+    resultBox.classList.add('d-none');
+    fileInput.value = '';
+  });
+  document.getElementById('replace-recipients-btn')?.addEventListener('click', () => {
+    recipientsEl.value = data.valid.join('\n');
+    recipientsEl.dispatchEvent(new Event('input', { bubbles: true }));
+    TJ.notify.success(`Replaced recipients with ${data.valid_count} from the file.`);
+    resultBox.classList.add('d-none');
+    fileInput.value = '';
+  });
 });
 
 document.querySelectorAll('[data-cancel-blast]').forEach(btn => {

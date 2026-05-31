@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -380,6 +380,24 @@ async def cancel_blast(
     db.commit()
     log_action(db, user, "DELETE", "EmailBlast", str(blast.id), detail="Cancelled by user")
     return {"ok": True}
+
+
+@router.post("/email-blasts/parse-recipients")
+async def parse_recipient_file(
+    file: UploadFile = File(...),
+    user: User = Depends(get_current_user),
+):
+    """Parse a CSV / TXT / XLSX upload and return clean emails + rejects."""
+    from services.recipient_parser import parse_recipients
+    from fastapi import UploadFile  # noqa
+    try:
+        content = await file.read()
+        result = parse_recipients(content, file.content_type or "", file.filename or "")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Couldn't parse file: {e}")
+    return {"ok": True, "filename": file.filename, **result}
 
 
 @router.post("/email-blasts")

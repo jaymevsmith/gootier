@@ -12,3 +12,4 @@ psycopg2-binary>=2.9
 anthropic>=0.39
 stripe>=7.0
 fal-client>=0.5
+openpyxl>=3.1
