@@ -361,6 +361,10 @@ KNOWN_ENV_KEYS = [
     ("TIKTOK_CLIENT_SECRET",   "social",  True,  False, "TikTok developer client secret."),
     ("TIKTOK_OAUTH_REDIRECT",  "social",  False, False, "TikTok OAuth redirect URI, e.g. https://yourhost/oauth/tiktok/callback"),
 
+    ("YOUTUBE_CLIENT_ID",      "social",  False, False, "Google OAuth 2.0 client ID for YouTube uploads. From Google Cloud Console → Credentials."),
+    ("YOUTUBE_CLIENT_SECRET",  "social",  True,  False, "Google OAuth 2.0 client secret."),
+    ("YOUTUBE_OAUTH_REDIRECT", "social",  False, False, "YouTube OAuth redirect URI, e.g. https://yourhost/oauth/youtube/callback"),
+
     ("FAL_API_KEY",            "ai",      True,  False, "fal.ai API key powering image + video generation."),
 ]
 

@@ -210,6 +210,107 @@ async def publish_linkedin(conn: SocialConnection, content: str,
         return {"success": False, "error": str(e), "platform": "linkedin"}
 
 
+async def _maybe_refresh_youtube_token(conn: SocialConnection) -> str:
+    """If the stored YouTube access token is near expiry, refresh + persist.
+    Returns the bearer token to use right now."""
+    from datetime import datetime, timedelta
+    if not conn.refresh_token:
+        return conn.access_token
+    if conn.expires_at and conn.expires_at > datetime.utcnow() + timedelta(minutes=1):
+        return conn.access_token
+
+    from routes.oauth_routes import refresh_youtube_access_token
+    from database import SessionLocal
+    data = refresh_youtube_access_token(conn.refresh_token)
+    new_token = data.get("access_token")
+    if not new_token:
+        return conn.access_token
+
+    expires_at = datetime.utcnow() + timedelta(seconds=int(data.get("expires_in", 3600)) - 60)
+    db = SessionLocal()
+    try:
+        fresh = db.query(SocialConnection).filter(SocialConnection.id == conn.id).first()
+        if fresh:
+            fresh.access_token = new_token
+            fresh.expires_at = expires_at
+            db.commit()
+    finally:
+        db.close()
+    conn.access_token = new_token
+    conn.expires_at = expires_at
+    return new_token
+
+
+async def publish_youtube(conn: SocialConnection, content: str,
+                            video_url: Optional[str] = None) -> Dict:
+    """Upload a video to the connected YouTube channel.
+
+    YouTube is video-only — text/image posts get skipped with a clear error.
+    Multipart `videos.insert` is used since fal-CDN videos are usually well
+    under 5GB; resumable upload would be needed only for huge files.
+    """
+    if not video_url:
+        return {"success": False, "error": "YouTube requires a video_url",
+                "platform": "youtube"}
+
+    try:
+        access_token = await _maybe_refresh_youtube_token(conn)
+
+        async with httpx.AsyncClient(timeout=300.0, follow_redirects=True) as client:
+            video_resp = await client.get(video_url)
+            video_resp.raise_for_status()
+            video_bytes = video_resp.content
+
+            title = (content or "Gootier upload").strip()[:100] or "Gootier upload"
+            desc  = (content or "")[:5000]
+            metadata = {
+                "snippet": {
+                    "title": title,
+                    "description": desc,
+                    "categoryId": "22",  # People & Blogs — safe default
+                },
+                "status": {
+                    "privacyStatus": "public",
+                    "selfDeclaredMadeForKids": False,
+                    "embeddable": True,
+                },
+            }
+            boundary = "gootier_youtube_boundary"
+            body = (
+                f"--{boundary}\r\n"
+                f"Content-Type: application/json; charset=UTF-8\r\n\r\n"
+                f"{json.dumps(metadata)}\r\n"
+                f"--{boundary}\r\n"
+                f"Content-Type: video/mp4\r\n\r\n"
+            ).encode("utf-8") + video_bytes + f"\r\n--{boundary}--\r\n".encode("utf-8")
+
+            up_resp = await client.post(
+                "https://www.googleapis.com/upload/youtube/v3/videos",
+                params={"uploadType": "multipart", "part": "snippet,status"},
+                headers={
+                    "Authorization": f"Bearer {access_token}",
+                    "Content-Type": f"multipart/related; boundary={boundary}",
+                },
+                content=body,
+            )
+            if up_resp.status_code >= 400:
+                return {"success": False, "error": up_resp.text[:1000],
+                        "platform": "youtube"}
+            data = up_resp.json()
+            video_id = data.get("id")
+            return {
+                "success": True,
+                "post_id": video_id,
+                "url": f"https://youtu.be/{video_id}" if video_id else None,
+                "platform": "youtube",
+            }
+    except httpx.HTTPStatusError as e:
+        return {"success": False, "error": e.response.text[:1000],
+                "platform": "youtube"}
+    except Exception as e:
+        return {"success": False, "error": str(e), "platform": "youtube"}
+
+
 async def publish_tiktok(conn: SocialConnection, content: str,
                            video_url: Optional[str] = None) -> Dict:
     """TikTok Content Posting API — direct video upload from URL (PULL_FROM_URL).
@@ -278,6 +379,8 @@ async def publish_to_connections(connections: List[SocialConnection], content: s
             results[conn.id] = await publish_linkedin(
                 conn, content, link_url=link_url, image_url=image_url,
             )
+        elif conn.platform == "youtube":
+            results[conn.id] = await publish_youtube(conn, content, video_url=video_url)
         elif conn.platform == "tiktok":
             results[conn.id] = await publish_tiktok(conn, content, video_url=video_url)
         else:

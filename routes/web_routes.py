@@ -96,6 +96,7 @@ async def connections_page(
         "twitter_configured":  bool(get_env("X_CLIENT_ID")),
         "linkedin_configured": bool(get_env("LINKEDIN_CLIENT_ID")),
         "tiktok_configured":   bool(get_env("TIKTOK_CLIENT_KEY")),
+        "youtube_configured":  bool(get_env("YOUTUBE_CLIENT_ID")),
     }
     return templates.TemplateResponse(request, "connections.html", _ctx(
         user, connections=items, platform_status=platform_status,

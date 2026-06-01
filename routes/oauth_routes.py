@@ -444,6 +444,150 @@ async def linkedin_callback(
 
 
 # --------------------------------------------------------------------------- #
+# YouTube — Google OAuth 2.0 (sensitive scope: youtube.upload)
+# --------------------------------------------------------------------------- #
+
+def _yt_client_id() -> str:     return get_env("YOUTUBE_CLIENT_ID", "")
+def _yt_client_secret() -> str: return get_env("YOUTUBE_CLIENT_SECRET", "")
+def _yt_redirect() -> str:
+    return get_env("YOUTUBE_OAUTH_REDIRECT", "http://localhost:8000/oauth/youtube/callback")
+
+YT_AUTHORIZE = "https://accounts.google.com/o/oauth2/v2/auth"
+YT_TOKEN     = "https://oauth2.googleapis.com/token"
+YT_CHANNELS  = "https://www.googleapis.com/youtube/v3/channels"
+YT_SCOPES    = "https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube.readonly"
+
+
+@router.get("/youtube/start")
+async def youtube_start(user: User = Depends(get_current_user)):
+    if not _yt_client_id():
+        raise HTTPException(status_code=503, detail="YouTube OAuth is not configured")
+    params = {
+        "client_id": _yt_client_id(),
+        "redirect_uri": _yt_redirect(),
+        "response_type": "code",
+        "scope": YT_SCOPES,
+        "state": _sign_state(user.id),
+        # access_type=offline + prompt=consent forces Google to return a
+        # refresh_token. Without prompt=consent on re-auth Google withholds
+        # the refresh_token and breaks scheduled uploads.
+        "access_type": "offline",
+        "prompt": "consent",
+        "include_granted_scopes": "true",
+    }
+    return RedirectResponse(url=f"{YT_AUTHORIZE}?{urlencode(params)}", status_code=303)
+
+
+@router.get("/youtube/callback")
+async def youtube_callback(
+    code: str = "",
+    state: str = "",
+    error: str = "",
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if error:
+        raise HTTPException(status_code=400, detail=f"YouTube OAuth declined: {error}")
+    if not code:
+        raise HTTPException(status_code=400, detail="Missing OAuth code")
+    if _verify_state(state, user.id) is None:
+        raise HTTPException(status_code=400, detail="Invalid or forged OAuth state")
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        token_resp = await client.post(
+            YT_TOKEN,
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            data={
+                "code": code,
+                "client_id": _yt_client_id(),
+                "client_secret": _yt_client_secret(),
+                "redirect_uri": _yt_redirect(),
+                "grant_type": "authorization_code",
+            },
+        )
+        if token_resp.status_code >= 400:
+            raise HTTPException(status_code=502, detail=f"YouTube token exchange failed: {token_resp.text}")
+        token_data = token_resp.json()
+        access_token = token_data.get("access_token")
+        refresh_token = token_data.get("refresh_token")
+        expires_in = int(token_data.get("expires_in", 3600))
+        if not access_token:
+            raise HTTPException(status_code=502, detail="No access_token from Google")
+
+        ch_resp = await client.get(
+            YT_CHANNELS,
+            params={"mine": "true", "part": "snippet"},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        if ch_resp.status_code >= 400:
+            raise HTTPException(status_code=502, detail=f"YouTube channels.list failed: {ch_resp.text}")
+        items = (ch_resp.json() or {}).get("items") or []
+        if not items:
+            raise HTTPException(status_code=400, detail="No YouTube channel found on this account")
+
+    _check_connection_quota(db, user, len(items))
+
+    from datetime import timedelta
+    expires_at = datetime.utcnow() + timedelta(seconds=expires_in - 60)
+
+    for ch in items:
+        ch_id = ch.get("id")
+        snippet = ch.get("snippet") or {}
+        title = snippet.get("title") or ch_id
+        if not ch_id:
+            continue
+        existing = db.query(SocialConnection).filter(
+            SocialConnection.user_id == user.id,
+            SocialConnection.platform == "youtube",
+            SocialConnection.page_id == ch_id,
+        ).first()
+        if existing:
+            existing.access_token = access_token
+            # Google only returns refresh_token on first consent — preserve
+            # an existing one if this re-auth didn't include one.
+            if refresh_token:
+                existing.refresh_token = refresh_token
+            existing.account_name = title
+            existing.expires_at = expires_at
+            existing.is_active = True
+        else:
+            db.add(SocialConnection(
+                user_id=user.id, platform="youtube",
+                account_name=title,
+                access_token=access_token, refresh_token=refresh_token,
+                page_id=ch_id, expires_at=expires_at,
+                is_active=True,
+            ))
+
+    db.commit()
+    log_action(db, user, "CREATE", "SocialConnection",
+               detail=f"YouTube OAuth — {len(items)} channel(s)")
+    response = RedirectResponse(url="/connections", status_code=303)
+    bits = ", ".join(c.get('snippet', {}).get('title', '?') for c in items)
+    set_flash(response, "success", f"Connected YouTube channel: {bits}.")
+    return response
+
+
+# Needed by services/social_publish.py for the refresh-token dance
+def refresh_youtube_access_token(refresh_token: str) -> dict:
+    """Synchronous helper — used by the scheduler's publish path. Returns the
+    full token-endpoint response (caller persists the new access_token +
+    expires_at)."""
+    import httpx as _httpx
+    resp = _httpx.post(
+        YT_TOKEN, timeout=20.0,
+        data={
+            "refresh_token": refresh_token,
+            "client_id": _yt_client_id(),
+            "client_secret": _yt_client_secret(),
+            "grant_type": "refresh_token",
+        },
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+# --------------------------------------------------------------------------- #
 # TikTok — OAuth 2.0 with PKCE
 # --------------------------------------------------------------------------- #
 
