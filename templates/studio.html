@@ -423,6 +423,15 @@ function toggleClip(id) {
   if (idx >= 0) {
     picked.splice(idx, 1);
     delete clipOpts[id];
+    // Drop overlays attached to the removed clip and shift higher indices
+    // down so subsequent overlays still target the right (renumbered) clip.
+    // Without this, an AI-suggested overlay can keep `clip_index: 2` after
+    // clip 0 is removed, and the compose request 400s.
+    textOverlays = textOverlays
+      .filter(ov => ov.clip_index !== idx)
+      .map(ov => ov.clip_index > idx
+        ? { ...ov, clip_index: ov.clip_index - 1 }
+        : ov);
   } else if (picked.length < 10) {
     picked.push(id);
     clipOpts[id] = defaultOpts();
@@ -688,9 +697,17 @@ document.getElementById('ai-plan-btn').addEventListener('click', async () => {
   paintSequence();
   paintCost();
 
-  // Music generation is async — kick it off and poll.
+  // Music generation is async — kick it off and poll.  Clear any stale URL
+  // from a previous AI run first so the user can't accidentally submit the
+  // old track while the new one is still rendering.
   aiMusicUrl = null;
+  const musicChk = document.getElementById('audio-add-music');
+  const musicUrl = document.getElementById('music-url');
+  const musicPanel = document.getElementById('music-panel');
   if (wantMusic && plan.music_prompt) {
+    musicChk.checked = false;
+    musicUrl.value = '';
+    musicPanel.classList.add('d-none');
     status.innerHTML = `<i class="fas fa-music me-1"></i>Generating music: "${escapeHtml(plan.music_prompt)}" — usually 20-40s.`;
     // Pick a duration close to the total composed length, clamped 15..60.
     const target = Math.max(15, Math.min(60, Math.round(
@@ -710,7 +727,16 @@ document.getElementById('ai-plan-btn').addEventListener('click', async () => {
   TJ.notify.success('AI plan ready — tweak anything, then hit Compose.');
 });
 
+// Cap roughly 4 minutes of polling (fal stable-audio normally finishes in
+// 20-40s, so 30 attempts at 4-6s gives the user a safety bail-out without
+// hammering the API forever if fal hangs).
+const POLL_MAX_ATTEMPTS = 30;
+
 function pollMusicJob(jobId, attempt, statusEl) {
+  if (attempt >= POLL_MAX_ATTEMPTS) {
+    statusEl.innerHTML = `<i class="fas fa-clock text-warning me-1"></i>Music gen still running after a few minutes — check back later under <a href="/assets">Assets</a>. Composing without music for now.`;
+    return;
+  }
   const wait = attempt < 6 ? 4000 : 6000;
   setTimeout(async () => {
     const job = await TJ.api.get(`/api/media/jobs/${jobId}`);
@@ -781,6 +807,16 @@ document.getElementById('studio-submit').addEventListener('click', async () => {
 });
 
 function pollComposeJob(jobId, attempt) {
+  // Compose runs ffmpeg locally — even a 60s output is bounded at ~90s.
+  // 40 attempts at 4-10s gives ~6 minutes before we surface a "stuck" hint
+  // instead of polling indefinitely if the worker hangs.
+  if (attempt >= 40) {
+    document.getElementById('compose-running').classList.add('d-none');
+    document.getElementById('compose-error-msg').textContent =
+      'Composition is taking longer than expected. Check the Assets page in a minute or two — if it still hasn\'t finished, the worker may be stuck and your credits will refund automatically.';
+    document.getElementById('compose-error').classList.remove('d-none');
+    return;
+  }
   const wait = attempt < 6 ? 4000 : (attempt < 20 ? 6000 : 10000);
   setTimeout(async () => {
     const job = await TJ.api.get(`/api/media/jobs/${jobId}`);

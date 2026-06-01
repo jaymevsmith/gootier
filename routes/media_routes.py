@@ -605,17 +605,10 @@ async def create_compose_job(
     db.commit()
     db.refresh(job)
 
-    # Background task — ffmpeg work is bounded (~20-40s for a 60s output)
-    # and we don't need a fal request_id since the result is local.
-    from fastapi import BackgroundTasks
-    bg: BackgroundTasks = request.scope.get("background_tasks") or BackgroundTasks()
-    bg.add_task(_run_compose_job, job.id, [c.result_url for c in ordered_clips],
-                payload.keep_original_audio,
-                payload.narration_script, tts_endpoint, voice_id,
-                payload.music_url, user.id, sanitized_opts or None,
-                sanitized_trans or None, sanitized_overlays or None)
-    request.scope["background_tasks"] = bg
-    # Fire immediately if FastAPI hasn't attached a tasks runner yet.
+    # Fire the ffmpeg worker as an asyncio task — the work is local, bounded
+    # (~20-40s for a 60s output), and doesn't need request scope.  Using
+    # FastAPI BackgroundTasks in addition would double-dispatch the job and
+    # cause two ffmpeg passes racing on the same MediaJob row.
     import asyncio as _asyncio
     _asyncio.create_task(_run_compose_job(
         job.id, [c.result_url for c in ordered_clips],
@@ -781,12 +774,37 @@ async def compose_ai_plan(
         raise HTTPException(status_code=502, detail=f"AI plan failed: {e}")
 
     # 3) Sanitize the plan against the same allowlists the compose endpoint uses.
+    #
+    # Index-mapping rule: we try to honour the AI's `clip_index` / `between`
+    # values, but if multiple entries collide on the same index (or indices
+    # are missing entirely) we fall back to positional order — otherwise the
+    # last-writer-wins dict overwrite silently drops most clips' transforms
+    # and they get the default 1× speed / no crop / no reverse.
+    def _index_or_fallback(items: list, key: str, expected: int) -> list:
+        if not items:
+            return [{} for _ in range(expected)]
+        # Honour explicit indices only when they form a clean 0..expected-1 set.
+        indices = [int(it.get(key, idx)) for idx, it in enumerate(items)]
+        unique_indices = set(indices)
+        looks_clean = (
+            len(indices) == len(unique_indices) == expected
+            and all(0 <= idx < expected for idx in unique_indices)
+        )
+        if looks_clean:
+            by_idx = {indices[i]: items[i] for i in range(len(items))}
+            return [by_idx.get(i, {}) for i in range(expected)]
+        # Fall back to position — pad / truncate to expected length.
+        out = list(items[:expected])
+        while len(out) < expected:
+            out.append({})
+        return out
+
     n = len(ordered_clips)
     raw_opts = plan.get("clip_options") or []
-    by_idx_opts: dict = {int(o.get("clip_index", i)): o for i, o in enumerate(raw_opts)}
+    options_in_order = _index_or_fallback(raw_opts, "clip_index", n)
     clip_options: list[dict] = []
     for i in range(n):
-        o = by_idx_opts.get(i, {})
+        o = options_in_order[i] or {}
         crop = o.get("crop_aspect")
         if crop and crop not in _ALLOWED_CROP_ASPECTS:
             crop = None
@@ -798,10 +816,10 @@ async def compose_ai_plan(
         })
 
     raw_trans = plan.get("transitions") or []
-    by_idx_trans: dict = {int(t.get("between", i)): t for i, t in enumerate(raw_trans)}
+    trans_in_order = _index_or_fallback(raw_trans, "between", max(0, n - 1))
     transitions: list[dict] = []
     for i in range(max(0, n - 1)):
-        t = by_idx_trans.get(i, {})
+        t = trans_in_order[i] or {}
         ttype = (t.get("type") or "").strip()
         if ttype not in _ALLOWED_TRANSITIONS:
             ttype = ""
