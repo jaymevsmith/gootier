@@ -413,6 +413,23 @@ class TransitionSpec(BaseModel):
     duration: float = 0.5
 
 
+class TextOverlay(BaseModel):
+    """A burned-in text caption on a single clip.
+
+    Multiple overlays can sit on the same clip (e.g. headline + subline) — they
+    each apply to the same drawtext filter chain.  ``clip_index`` is 0-based
+    against ``source_job_ids``.
+    """
+    clip_index: int = 0
+    text: str = ""
+    position: str = "bottom"
+    fontsize: int = 64
+    color: str = "white"
+    start: float = 0.0          # seconds into the clip
+    duration: float = 3.0       # how long to display
+    outline: bool = True        # black stroke for legibility on busy footage
+
+
 _ALLOWED_CROP_ASPECTS = {"9:16", "1:1", "16:9", "4:5", "3:4", "4:3"}
 # Subset of ffmpeg's xfade transition names we expose in the UI.  Keep this
 # in sync with TRANSITION_CHOICES in templates/studio.html.
@@ -424,6 +441,39 @@ _ALLOWED_TRANSITIONS = {
     "dissolve", "distance",
     "smoothleft", "smoothright", "smoothup", "smoothdown",
 }
+_ALLOWED_TEXT_POSITIONS = {
+    "top", "center", "bottom",
+    "top-left", "top-right", "bottom-left", "bottom-right",
+}
+
+
+def _sanitize_text_overlay(ov: TextOverlay, n_clips: int) -> dict:
+    """Clamp + validate a single text overlay against allowlists.  Raises
+    HTTPException(400) on anything out of bounds."""
+    if not ov.text or not ov.text.strip():
+        raise HTTPException(status_code=400, detail="text_overlay text is empty.")
+    if len(ov.text) > 300:
+        raise HTTPException(status_code=400, detail="text_overlay text > 300 chars.")
+    if ov.position not in _ALLOWED_TEXT_POSITIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"text_overlay position '{ov.position}' not in {sorted(_ALLOWED_TEXT_POSITIONS)}.",
+        )
+    if not (0 <= ov.clip_index < n_clips):
+        raise HTTPException(
+            status_code=400,
+            detail=f"text_overlay clip_index {ov.clip_index} out of range.",
+        )
+    return {
+        "clip_index": int(ov.clip_index),
+        "text": ov.text.strip(),
+        "position": ov.position,
+        "fontsize": max(24, min(160, int(ov.fontsize or 64))),
+        "color": (ov.color or "white").strip(),
+        "start": max(0.0, float(ov.start or 0.0)),
+        "duration": max(0.1, min(60.0, float(ov.duration or 3.0))),
+        "outline": bool(ov.outline),
+    }
 
 
 class ComposeJobCreate(BaseModel):
@@ -434,6 +484,7 @@ class ComposeJobCreate(BaseModel):
     music_url: Optional[str] = None
     clip_options: Optional[List[ClipOption]] = None
     transitions: Optional[List[TransitionSpec]] = None
+    text_overlays: Optional[List[TextOverlay]] = None
 
 
 @router.post("/api/media/jobs/compose")
@@ -502,6 +553,12 @@ async def create_compose_job(
         td = max(0.1, min(2.0, float(t.duration or 0.5)))
         sanitized_trans.append({"type": ttype, "duration": td})
 
+    # Text overlays — validated + clamped per overlay.
+    sanitized_overlays: list[dict] = [
+        _sanitize_text_overlay(ov, len(payload.source_job_ids))
+        for ov in (payload.text_overlays or [])
+    ]
+
     # Credit cost: flat 50 for the compose + TTS surcharge if narration set.
     cost = 50
     tts_endpoint = None
@@ -541,6 +598,7 @@ async def create_compose_job(
             "music_url": payload.music_url,
             "clip_options": sanitized_opts or None,
             "transitions": sanitized_trans or None,
+            "text_overlays": sanitized_overlays or None,
         }),
     )
     db.add(job)
@@ -555,7 +613,7 @@ async def create_compose_job(
                 payload.keep_original_audio,
                 payload.narration_script, tts_endpoint, voice_id,
                 payload.music_url, user.id, sanitized_opts or None,
-                sanitized_trans or None)
+                sanitized_trans or None, sanitized_overlays or None)
     request.scope["background_tasks"] = bg
     # Fire immediately if FastAPI hasn't attached a tasks runner yet.
     import asyncio as _asyncio
@@ -564,7 +622,7 @@ async def create_compose_job(
         payload.keep_original_audio,
         payload.narration_script, tts_endpoint, voice_id,
         payload.music_url, user.id, sanitized_opts or None,
-        sanitized_trans or None,
+        sanitized_trans or None, sanitized_overlays or None,
     ))
 
     log_action(db, user, "CREATE", "MediaJob", str(job.id),
@@ -577,7 +635,8 @@ async def _run_compose_job(job_id: int, clip_urls: list, keep_original: bool,
                             voice_id: Optional[str], music_url: Optional[str],
                             user_id: int,
                             clip_options: Optional[List[dict]] = None,
-                            transitions: Optional[List[dict]] = None) -> None:
+                            transitions: Optional[List[dict]] = None,
+                            text_overlays: Optional[List[dict]] = None) -> None:
     """Background worker — does the actual ffmpeg + TTS work + DB update."""
     from datetime import datetime as _dt
     from database import SessionLocal
@@ -615,6 +674,7 @@ async def _run_compose_job(job_id: int, clip_urls: list, keep_original: bool,
                 keep_original_audio=keep_original,
                 clip_options=clip_options,
                 transitions=transitions,
+                text_overlays=text_overlays,
             )
             job.result_url = url
             job.thumbnail_url = url
@@ -643,6 +703,228 @@ async def _run_compose_job(job_id: int, clip_urls: list, keep_original: bool,
                 db.commit()
         except Exception:
             log.exception("refund/finalise also failed for job %s", job_id)
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
+# AI-assisted compose: brief + clip metadata → structured plan + (optional)
+# music generation.  The plan is just a recommendation — the client pre-fills
+# the existing studio sequence editor with the AI's choices and the user
+# tweaks anything before hitting "Compose video".
+# ---------------------------------------------------------------------------
+
+class AIComposePlanRequest(BaseModel):
+    source_job_ids: List[int] = Field(..., min_length=1, max_length=10)
+    brief: str = Field(..., min_length=4, max_length=2000)
+    style: Optional[str] = None         # "cinematic" | "energetic" | "chill" | etc
+    want_music: bool = True
+    want_text: bool = True
+
+
+@router.post("/api/media/jobs/compose/ai-plan")
+async def compose_ai_plan(
+    payload: AIComposePlanRequest,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Ask the AI to plan a compose job given an ordered clip list + a brief.
+
+    Returns a sanitized plan with ``clip_options``, ``transitions``,
+    ``text_overlays``, and an optional ``music_prompt``.  The client should
+    feed this straight into the existing ``POST /api/media/jobs/compose``
+    endpoint after the user reviews + edits.
+
+    Costs 2 credits (Sonnet planning call only — music generation is billed
+    separately if the user accepts the suggested music_prompt).
+    """
+    # 1) Validate clips belong to the user, are video, are done.
+    sources = db.query(MediaJob).filter(
+        MediaJob.id.in_(payload.source_job_ids),
+        MediaJob.user_id == user.id,
+        MediaJob.kind == "video",
+        MediaJob.status == "done",
+        MediaJob.result_url != None,  # noqa: E711
+    ).all()
+    if len(sources) != len(payload.source_job_ids):
+        raise HTTPException(status_code=400,
+                            detail="One or more source clips are missing, not yours, or not finished yet.")
+    by_id = {s.id: s for s in sources}
+    ordered_clips = [by_id[i] for i in payload.source_job_ids if i in by_id]
+
+    clip_meta = [{
+        "clip_index": i,
+        "duration_seconds": float(c.duration_seconds or 5),
+        "model_key": c.model_key or "unknown",
+        "prompt": (c.prompt or "")[:200],
+    } for i, c in enumerate(ordered_clips)]
+
+    credits_spend(db, user, 2, reason="video_compose_ai_plan",
+                  detail=f"clips={len(ordered_clips)} brief_chars={len(payload.brief)}")
+
+    # 2) Call Sonnet for the plan.
+    from services.ai_generator import plan_video_compose
+    try:
+        plan = plan_video_compose(
+            brief=payload.brief,
+            clip_meta=clip_meta,
+            want_music=payload.want_music,
+            want_text=payload.want_text,
+            style=payload.style,
+        )
+    except Exception as e:
+        # Refund the 2 credits on failure — same pattern as compose worker.
+        from services.credits import grant as _grant
+        _grant(db, user, 2,
+               reason="refund_ai_plan_failed",
+               detail=f"AI plan failed: {str(e)[:200]}")
+        raise HTTPException(status_code=502, detail=f"AI plan failed: {e}")
+
+    # 3) Sanitize the plan against the same allowlists the compose endpoint uses.
+    n = len(ordered_clips)
+    raw_opts = plan.get("clip_options") or []
+    by_idx_opts: dict = {int(o.get("clip_index", i)): o for i, o in enumerate(raw_opts)}
+    clip_options: list[dict] = []
+    for i in range(n):
+        o = by_idx_opts.get(i, {})
+        crop = o.get("crop_aspect")
+        if crop and crop not in _ALLOWED_CROP_ASPECTS:
+            crop = None
+        clip_options.append({
+            "crop_aspect": crop,
+            "reverse": bool(o.get("reverse")),
+            "speed": max(0.25, min(4.0, float(o.get("speed") or 1.0))),
+            "rationale": (o.get("rationale") or "")[:200],
+        })
+
+    raw_trans = plan.get("transitions") or []
+    by_idx_trans: dict = {int(t.get("between", i)): t for i, t in enumerate(raw_trans)}
+    transitions: list[dict] = []
+    for i in range(max(0, n - 1)):
+        t = by_idx_trans.get(i, {})
+        ttype = (t.get("type") or "").strip()
+        if ttype not in _ALLOWED_TRANSITIONS:
+            ttype = ""
+        transitions.append({
+            "type": ttype,
+            "duration": max(0.1, min(2.0, float(t.get("duration") or 0.5))),
+            "rationale": (t.get("rationale") or "")[:200],
+        })
+
+    text_overlays: list[dict] = []
+    for ov in (plan.get("text_overlays") or []):
+        idx = int(ov.get("clip_index", 0))
+        if not (0 <= idx < n):
+            continue
+        text = (ov.get("text") or "").strip()
+        if not text or len(text) > 300:
+            continue
+        pos = ov.get("position") or "bottom"
+        if pos not in _ALLOWED_TEXT_POSITIONS:
+            pos = "bottom"
+        text_overlays.append({
+            "clip_index": idx,
+            "text": text,
+            "position": pos,
+            "start": max(0.0, float(ov.get("start") or 0.0)),
+            "duration": max(0.1, min(60.0, float(ov.get("duration") or 3.0))),
+            "fontsize": max(24, min(160, int(ov.get("fontsize") or 64))),
+            "color": (ov.get("color") or "white").strip()[:32],
+            "outline": True,
+        })
+
+    music_prompt = (plan.get("music_prompt") or "").strip() if payload.want_music else ""
+    if music_prompt and len(music_prompt) > 800:
+        music_prompt = music_prompt[:800]
+
+    log_action(db, user, "CREATE", "AIComposePlan", "-",
+               detail=f"clips={n} music={'yes' if music_prompt else 'no'} "
+                      f"text_overlays={len(text_overlays)}")
+
+    return {
+        "narrative": (plan.get("narrative") or "")[:500],
+        "clip_options": clip_options,
+        "transitions": transitions,
+        "text_overlays": text_overlays,
+        "music_prompt": music_prompt or None,
+    }
+
+
+class MusicGenRequest(BaseModel):
+    prompt: str = Field(..., min_length=4, max_length=800)
+    seconds: int = Field(30, ge=5, le=60)
+
+
+@router.post("/api/media/jobs/music")
+async def create_music_job(
+    payload: MusicGenRequest,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Generate an instrumental music clip via fal stable-audio.
+
+    Costs 8 credits — billed up-front, refunded on failure.  Returns the
+    standard MediaJob serialization so the client can poll
+    ``GET /api/media/jobs/{id}`` until ``result_url`` is set.
+    """
+    import asyncio as _asyncio
+    cost = 8
+    credits_spend(db, user, cost, reason="music_generate",
+                  detail=f"seconds={payload.seconds} prompt_chars={len(payload.prompt)}")
+    job = MediaJob(
+        user_id=user.id,
+        kind="audio",
+        provider="fal-stable-audio",
+        model_key="stable-audio",
+        model_endpoint="fal-ai/stable-audio",
+        prompt=payload.prompt[:500],
+        status="queued",
+        cost_credits=cost,
+    )
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+    _asyncio.create_task(_run_music_job(job.id, payload.prompt, payload.seconds, user.id))
+    log_action(db, user, "CREATE", "MediaJob", str(job.id),
+               detail=f"music: {payload.seconds}s")
+    return _serialize_job(job)
+
+
+async def _run_music_job(job_id: int, prompt: str, seconds: int, user_id: int) -> None:
+    """Background worker for /api/media/jobs/music."""
+    from datetime import datetime as _dt
+    from database import SessionLocal
+    from services.media import generate_music
+    import logging
+    log = logging.getLogger("gootier.music")
+    db = SessionLocal()
+    try:
+        job = db.query(MediaJob).filter(MediaJob.id == job_id).first()
+        if not job:
+            return
+        job.status = "running"
+        db.commit()
+        try:
+            url = await generate_music(prompt, seconds=seconds)
+            if not url:
+                raise RuntimeError("Music generator returned no URL.")
+            job.result_url = url
+            job.status = "done"
+            job.completed_at = _dt.utcnow()
+            db.commit()
+            log.info("music job %s done -> %s", job.id, url)
+        except Exception as e:
+            log.exception("music job %s failed: %s", job_id, e)
+            from services.credits import grant as _grant
+            user = db.query(User).filter(User.id == user_id).first()
+            if user and job.cost_credits:
+                _grant(db, user, job.cost_credits,
+                       reason=f"refund_failed_{job.id}",
+                       detail=f"Auto-refund — music gen failed: {e}")
+            job.status = "failed"
+            job.error = str(e)[:1000]
+            job.completed_at = _dt.utcnow()
+            db.commit()
     finally:
         db.close()
 

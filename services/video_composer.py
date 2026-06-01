@@ -28,6 +28,26 @@ logger = logging.getLogger("gootier.composer")
 MAX_TOTAL_SECONDS = 60
 DOWNLOAD_TIMEOUT = 60.0
 
+# DejaVuSans-Bold ships with Debian's `ffmpeg` package and works for most
+# Latin-script text overlays.  Falls back to ffmpeg's built-in font if
+# missing, but that breaks on most container images so we keep the path
+# pinned and document it in the Dockerfile.
+DEFAULT_FONT_PATH = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+
+# Allowed text-overlay positions → (x, y) ffmpeg expressions.  Values use the
+# `tw` (text width) and `th` (text height) drawtext shortcuts so the box
+# stays glued to the chosen edge regardless of text length.  All positions
+# include a small inset from the frame edge.
+_TEXT_POSITIONS = {
+    "top":           ("(w-tw)/2", "h*0.08"),
+    "center":        ("(w-tw)/2", "(h-th)/2"),
+    "bottom":        ("(w-tw)/2", "h*0.85 - th"),
+    "top-left":      ("w*0.05",   "h*0.08"),
+    "top-right":     ("w*0.95 - tw", "h*0.08"),
+    "bottom-left":   ("w*0.05",   "h*0.85 - th"),
+    "bottom-right":  ("w*0.95 - tw", "h*0.85 - th"),
+}
+
 
 async def _run(*args, **kwargs) -> str:
     """asyncio wrapper around ffmpeg / ffprobe subprocess invocation.
@@ -86,6 +106,48 @@ async def _has_audio_stream(path: str) -> bool:
         return False
 
 
+def _build_drawtext_clauses(text_overlays: List[dict], work_dir: str) -> List[str]:
+    """Build one ``drawtext=...`` clause per overlay.
+
+    Text is written to a tempfile (``textfile=...``) so we don't have to
+    escape colons / commas / quotes inline — much safer for arbitrary user
+    + AI-generated copy.  Returns an empty list if no usable overlays.
+    """
+    import tempfile
+    if not text_overlays:
+        return []
+    clauses: List[str] = []
+    for i, ov in enumerate(text_overlays):
+        text = (ov.get("text") or "").strip()
+        if not text:
+            continue
+        # Write the text to a tempfile so drawtext can `textfile=` it.
+        fd, path = tempfile.mkstemp(prefix=f"ov{i}-", suffix=".txt", dir=work_dir)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+        pos = ov.get("position") or "bottom"
+        x_expr, y_expr = _TEXT_POSITIONS.get(pos, _TEXT_POSITIONS["bottom"])
+        fontsize = int(ov.get("fontsize") or 64)
+        color = (ov.get("color") or "white").replace(":", "")
+        outline = bool(ov.get("outline", True))
+        start = max(0.0, float(ov.get("start") or 0.0))
+        duration = max(0.1, float(ov.get("duration") or 3.0))
+        end = start + duration
+        parts = [
+            f"drawtext=fontfile={DEFAULT_FONT_PATH}",
+            f"textfile={path}",
+            f"fontsize={fontsize}",
+            f"fontcolor={color}",
+            f"x={x_expr}",
+            f"y={y_expr}",
+            f"enable='between(t\\,{start:.3f}\\,{end:.3f})'",
+        ]
+        if outline:
+            parts += ["borderw=3", "bordercolor=black@0.7"]
+        clauses.append(":".join(parts))
+    return clauses
+
+
 def _build_atempo_chain(speed: float) -> List[str]:
     """ffmpeg's `atempo` filter only accepts 0.5..2.0 in a single instance;
     chain multiple instances to hit more extreme tempos.  Returns a list of
@@ -110,7 +172,8 @@ async def _normalise_clip(src: str, dest: str, target_w: int = 1080,
                             target_h: int = 1920,
                             crop_aspect: Optional[str] = None,
                             reverse: bool = False,
-                            speed: float = 1.0) -> None:
+                            speed: float = 1.0,
+                            text_overlays: Optional[List[dict]] = None) -> None:
     """Re-encode a clip to a known-good baseline so the concat filter is happy.
     Vertical 1080x1920 by default — that's the Reels / TikTok / Shorts native
     aspect. ffmpeg pads or crops as needed via scale + setsar + pad.
@@ -158,6 +221,10 @@ async def _normalise_clip(src: str, dest: str, target_w: int = 1080,
         s = max(0.25, min(4.0, float(speed)))
         # Higher PTS divisor → faster playback (frames closer together).
         vf_chain.append(f"setpts=PTS/{s}")
+    # Text overlays sit on top of the (cropped/scaled/sped-up) frame, BEFORE
+    # the final fps resample so the burned-in text doesn't get re-resampled.
+    if text_overlays:
+        vf_chain.extend(_build_drawtext_clauses(text_overlays, os.path.dirname(dest)))
     vf_chain.append("fps=30")
     vf = ",".join(vf_chain)
 
@@ -365,7 +432,8 @@ async def compose(clip_urls: List[str],
                     keep_original_audio: bool = True,
                     max_seconds: int = MAX_TOTAL_SECONDS,
                     clip_options: Optional[List[dict]] = None,
-                    transitions: Optional[List[dict]] = None) -> str:
+                    transitions: Optional[List[dict]] = None,
+                    text_overlays: Optional[List[dict]] = None) -> str:
     """Top-level entry: download → normalise → concat → mix → upload.
     Returns the fal CDN URL of the result.
 
@@ -388,6 +456,13 @@ async def compose(clip_urls: List[str],
         opts_list.append({})
     opts_list = opts_list[: len(clip_urls)]
 
+    # Group text overlays by clip_index for per-clip drawtext injection.
+    overlays_by_clip: dict = {}
+    for ov in (text_overlays or []):
+        idx = int(ov.get("clip_index", 0))
+        if 0 <= idx < len(clip_urls):
+            overlays_by_clip.setdefault(idx, []).append(ov)
+
     work = tempfile.mkdtemp(prefix="gootier-compose-")
     try:
         local_clips = []
@@ -405,6 +480,7 @@ async def compose(clip_urls: List[str],
                 crop_aspect=opt.get("crop_aspect"),
                 reverse=bool(opt.get("reverse")),
                 speed=float(opt.get("speed") or 1.0),
+                text_overlays=overlays_by_clip.get(i),
             )
             normalised.append(dest)
 

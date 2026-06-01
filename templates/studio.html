@@ -53,6 +53,55 @@
       </div>
     </div>
 
+    <!-- AI sequencer (renders once at least one clip is picked) -->
+    <div class="card-x mt-3 d-none" id="studio-ai-card">
+      <div class="card-x-header">
+        <h6><i class="fas fa-wand-magic-sparkles me-2 text-muted"></i>AI sequence</h6>
+        <span class="ms-auto small-meta">Brief in, plan out &middot; 2 credits</span>
+      </div>
+      <div class="card-x-body">
+        <label class="form-label small" for="ai-brief">What's this video about?</label>
+        <textarea class="form-control" id="ai-brief" rows="3" maxlength="2000"
+                  placeholder="e.g. 'Summer collection launch — three new flavours. Energetic vibe, quick cuts, big bold text on the reveal, upbeat synth track underneath.'"></textarea>
+        <div class="form-text mb-2">
+          AI sets crop / speed / reverse / transitions / on-screen text and (optionally) generates a music bed.
+          You can tweak anything after.
+        </div>
+        <div class="row g-2 align-items-center">
+          <div class="col-auto">
+            <label class="form-label small mb-1" for="ai-style">Style</label>
+            <select class="form-select form-select-sm" id="ai-style">
+              <option value="">No preference</option>
+              <option value="cinematic">Cinematic</option>
+              <option value="energetic">Energetic / fast cuts</option>
+              <option value="chill">Chill / laid-back</option>
+              <option value="informational">Informational</option>
+              <option value="dramatic">Dramatic</option>
+            </select>
+          </div>
+          <div class="col-auto">
+            <div class="form-check mt-3 mb-0">
+              <input class="form-check-input" type="checkbox" id="ai-want-music" checked>
+              <label class="form-check-label small" for="ai-want-music">Generate music</label>
+            </div>
+          </div>
+          <div class="col-auto">
+            <div class="form-check mt-3 mb-0">
+              <input class="form-check-input" type="checkbox" id="ai-want-text" checked>
+              <label class="form-check-label small" for="ai-want-text">On-screen text</label>
+            </div>
+          </div>
+          <div class="col-md text-end">
+            <button class="btn tj-grad-btn btn-sm mt-3" id="ai-plan-btn">
+              <i class="fas fa-wand-magic-sparkles me-1"></i>Generate plan
+            </button>
+          </div>
+        </div>
+        <div id="ai-plan-status" class="small text-muted mt-3 d-none"></div>
+        <div id="ai-plan-narrative" class="alert alert-info py-2 px-3 mt-3 d-none small"></div>
+      </div>
+    </div>
+
     <!-- Per-clip effects + transitions editor (renders once a clip is picked) -->
     <div class="card-x mt-3 d-none" id="studio-sequence-card">
       <div class="card-x-header">
@@ -257,6 +306,21 @@
   .studio-seq-row .seq-dur { grid-area: dur; }
 }
 
+/* AI-suggested text overlay chip (sits on a clip row) */
+.seq-overlay-chip {
+  display: inline-flex; align-items: center; gap: .25rem;
+  background: rgba(102,126,234,.18);
+  border: 1px solid rgba(102,126,234,.4);
+  color: var(--g-text-strong, #fff);
+  border-radius: 999px;
+  padding: .12rem .5rem;
+  font-size: .7rem;
+  margin-right: .25rem;
+  margin-bottom: .15rem;
+}
+.seq-overlay-chip .btn-close { font-size: .55rem; padding: 0; opacity: .8; }
+.seq-overlay-row { display: flex; flex-wrap: wrap; }
+
 /* Transition row between two clips */
 .studio-trans-row {
   display: grid;
@@ -294,6 +358,8 @@ const picked = [];  // ordered array of clip IDs
 const clipMeta = {};  // id -> {url, duration, model}
 const clipOpts = {}; // id -> {crop_aspect, reverse, speed}
 const transitions = []; // parallel to picked; transitions[i] sits between clip i and clip i+1
+let textOverlays = []; // [{clip_index, text, position, start, duration, fontsize, color}]
+let aiMusicUrl = null;  // populated after AI music gen completes
 const TRANSITION_CHOICES = [
   ['',           'None (hard cut)'],
   ['fade',       'Cross-dissolve'],
@@ -346,6 +412,12 @@ function defaultOpts() {
   return { crop_aspect: '', reverse: false, speed: 1 };
 }
 
+function escapeHtml(s) {
+  return String(s || '').replace(/[&<>"']/g, c => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  }[c]));
+}
+
 function toggleClip(id) {
   const idx = picked.indexOf(id);
   if (idx >= 0) {
@@ -395,9 +467,16 @@ function paintGrid() {
 
 function paintSequence() {
   const card = document.getElementById('studio-sequence-card');
+  const aiCard = document.getElementById('studio-ai-card');
   const list = document.getElementById('studio-sequence-list');
-  if (!picked.length) { card.classList.add('d-none'); list.innerHTML = ''; return; }
+  if (!picked.length) {
+    card.classList.add('d-none');
+    aiCard.classList.add('d-none');
+    list.innerHTML = '';
+    return;
+  }
   card.classList.remove('d-none');
+  aiCard.classList.remove('d-none');
 
   const rows = [];
   picked.forEach((id, i) => {
@@ -410,12 +489,24 @@ function paintSequence() {
       ([val, lbl]) => `<option value="${val}"${parseFloat(opts.speed) === val ? ' selected' : ''}>${lbl}</option>`
     ).join('');
     const eff = effectiveDuration(id);
+    // Text overlays attached to this clip (by clip_index in picked order).
+    const myOverlays = textOverlays
+      .map((ov, idx) => ({...ov, _idx: idx}))
+      .filter(ov => ov.clip_index === i);
+    const overlayChips = myOverlays.map(ov => `
+      <span class="seq-overlay-chip" title="${escapeHtml(ov.text)}">
+        <i class="fas fa-text-height"></i>
+        ${escapeHtml(ov.text.length > 28 ? ov.text.slice(0, 28) + '…' : ov.text)}
+        <button type="button" class="btn-close btn-close-white btn-sm ms-1"
+                data-remove-overlay="${ov._idx}" aria-label="Remove overlay"></button>
+      </span>`).join('');
     rows.push(`
-      <div class="studio-seq-row" data-clip-id="${id}">
+      <div class="studio-seq-row" data-clip-id="${id}" data-clip-pos="${i}">
         <div class="seq-pos">${i + 1}</div>
         <video class="seq-thumb" src="${meta.url}" muted preload="metadata" playsinline></video>
         <div class="seq-label">
           <div>~${meta.duration.toFixed(0)}s &middot; ${meta.model || 'clip'}</div>
+          ${overlayChips ? `<div class="seq-overlay-row mt-1">${overlayChips}</div>` : ''}
         </div>
         <select class="form-select form-select-sm seq-crop" data-field="crop_aspect" aria-label="Crop aspect">
           ${cropOpts}
@@ -472,6 +563,18 @@ function paintSequence() {
     });
   });
 
+  // Wire up overlay-remove click handlers.
+  list.querySelectorAll('[data-remove-overlay]').forEach(btn => {
+    btn.addEventListener('click', e => {
+      e.stopPropagation();
+      const idx = parseInt(btn.dataset.removeOverlay, 10);
+      if (idx >= 0 && idx < textOverlays.length) {
+        textOverlays.splice(idx, 1);
+        paintSequence();
+      }
+    });
+  });
+
   // Wire up transition change listeners.
   list.querySelectorAll('.studio-trans-row').forEach(row => {
     const i = parseInt(row.dataset.transIndex, 10);
@@ -509,6 +612,130 @@ function paintCost() {
     `Base 50 + narration ${nrCost} + music 0`;
 }
 
+// ---------- AI plan ----------
+document.getElementById('ai-plan-btn').addEventListener('click', async () => {
+  if (picked.length < 1) {
+    TJ.notify.warning('Pick at least one clip first.');
+    return;
+  }
+  const brief = document.getElementById('ai-brief').value.trim();
+  if (brief.length < 4) {
+    TJ.notify.warning('Tell the AI what the video is about first.');
+    return;
+  }
+  const wantMusic = document.getElementById('ai-want-music').checked;
+  const wantText  = document.getElementById('ai-want-text').checked;
+  const style     = document.getElementById('ai-style').value || null;
+
+  const btn = document.getElementById('ai-plan-btn');
+  const status = document.getElementById('ai-plan-status');
+  const narrEl = document.getElementById('ai-plan-narrative');
+  const restore = TJ.btnLoading(btn, 'Planning…');
+  status.classList.remove('d-none');
+  status.textContent = 'AI is reading the brief and your clips…';
+
+  const plan = await TJ.api.post('/api/media/jobs/compose/ai-plan', {
+    source_job_ids: [...picked],
+    brief, style, want_music: wantMusic, want_text: wantText,
+  });
+  restore();
+  if (!plan) { status.classList.add('d-none'); return; }
+
+  // Pre-fill clipOpts from plan.clip_options (parallel to picked).
+  (plan.clip_options || []).forEach((co, i) => {
+    const id = picked[i];
+    if (!id) return;
+    clipOpts[id] = {
+      crop_aspect: co.crop_aspect || '',
+      reverse: !!co.reverse,
+      speed: parseFloat(co.speed) || 1,
+    };
+  });
+
+  // Pre-fill transitions (length picked.length - 1).
+  transitions.length = 0;
+  (plan.transitions || []).forEach(t => {
+    transitions.push({
+      type: t.type || '',
+      duration: parseFloat(t.duration) || 0.5,
+    });
+  });
+  while (transitions.length < picked.length - 1) {
+    transitions.push({ type: '', duration: 0.5 });
+  }
+
+  // Pre-fill text overlays.
+  textOverlays = (plan.text_overlays || []).map(ov => ({
+    clip_index: ov.clip_index,
+    text: ov.text,
+    position: ov.position || 'bottom',
+    start: parseFloat(ov.start) || 0,
+    duration: parseFloat(ov.duration) || 3,
+    fontsize: parseInt(ov.fontsize, 10) || 64,
+    color: ov.color || 'white',
+    outline: true,
+  }));
+
+  // Show the narrative so the user knows what the AI is going for.
+  if (plan.narrative) {
+    narrEl.textContent = plan.narrative;
+    narrEl.classList.remove('d-none');
+  } else {
+    narrEl.classList.add('d-none');
+  }
+
+  paintGrid();
+  paintSequence();
+  paintCost();
+
+  // Music generation is async — kick it off and poll.
+  aiMusicUrl = null;
+  if (wantMusic && plan.music_prompt) {
+    status.innerHTML = `<i class="fas fa-music me-1"></i>Generating music: "${escapeHtml(plan.music_prompt)}" — usually 20-40s.`;
+    // Pick a duration close to the total composed length, clamped 15..60.
+    const target = Math.max(15, Math.min(60, Math.round(
+      picked.reduce((s, id) => s + effectiveDuration(id), 0)
+    )));
+    const musicJob = await TJ.api.post('/api/media/jobs/music', {
+      prompt: plan.music_prompt, seconds: target,
+    });
+    if (musicJob && musicJob.id) {
+      pollMusicJob(musicJob.id, 0, status);
+    } else {
+      status.textContent = 'Music gen failed to start — continuing without music.';
+    }
+  } else {
+    status.textContent = `AI plan loaded. ${textOverlays.length} text overlays, ${transitions.filter(t => t.type).length} transitions.`;
+  }
+  TJ.notify.success('AI plan ready — tweak anything, then hit Compose.');
+});
+
+function pollMusicJob(jobId, attempt, statusEl) {
+  const wait = attempt < 6 ? 4000 : 6000;
+  setTimeout(async () => {
+    const job = await TJ.api.get(`/api/media/jobs/${jobId}`);
+    if (!job) return;
+    if (job.status === 'done' && job.result_url) {
+      aiMusicUrl = job.result_url;
+      // Mirror into the manual music-bed UI so the user can see / override.
+      const musicChk = document.getElementById('audio-add-music');
+      const musicUrl = document.getElementById('music-url');
+      const musicPanel = document.getElementById('music-panel');
+      musicChk.checked = true;
+      musicPanel.classList.remove('d-none');
+      musicUrl.value = job.result_url;
+      statusEl.innerHTML = `<i class="fas fa-check text-success me-1"></i>Music ready — attached to the compose. Click <i class="fas fa-play"></i> to preview if you like.`;
+      paintCost();
+      return;
+    }
+    if (job.status === 'failed') {
+      statusEl.innerHTML = `<i class="fas fa-triangle-exclamation text-warning me-1"></i>Music gen failed (${job.error || 'unknown error'}) — credits refunded. Compose will continue without music.`;
+      return;
+    }
+    pollMusicJob(jobId, attempt + 1, statusEl);
+  }, wait);
+}
+
 document.getElementById('studio-submit').addEventListener('click', async () => {
   if (picked.length < 1) return;
   const clipOptionsPayload = picked.map(id => {
@@ -535,6 +762,7 @@ document.getElementById('studio-submit').addEventListener('click', async () => {
                 ? document.getElementById('music-url').value.trim() : null,
     clip_options: clipOptionsPayload,
     transitions: transitionsPayload,
+    text_overlays: textOverlays.length ? textOverlays : null,
   };
 
   const modalEl = document.getElementById('compose-modal');

@@ -145,6 +145,32 @@ def _sync_fal_key() -> str:
     return key
 
 
+async def generate_music(prompt: str, seconds: int = 30) -> str:
+    """Generate an instrumental music clip via fal stable-audio.
+
+    Used by the AI studio sequencer to back a composed video with a music
+    bed it can describe in plain English ("upbeat synth, 110 bpm, building
+    energy").  Returns the fal CDN URL of the rendered audio.
+
+    Costs ~$0.05 per render — caller is responsible for charging credits
+    via the standard MediaJob path.
+    """
+    _sync_fal_key()
+    import fal_client  # noqa: F401 — populates the cache
+    seconds = max(5, min(60, int(seconds or 30)))
+    result = await fal_client.run_async(
+        "fal-ai/stable-audio",
+        arguments={
+            "prompt": (prompt or "").strip()[:800] or "ambient instrumental, gentle, cinematic",
+            "seconds_total": seconds,
+        },
+    )
+    audio = (result or {}).get("audio_file") or (result or {}).get("audio") or {}
+    if isinstance(audio, dict):
+        return audio.get("url") or ""
+    return audio or ""
+
+
 async def upload_bytes(content: bytes, content_type: str) -> str:
     """Upload raw bytes to fal's CDN; returns the resulting public URL."""
     if content_type not in ACCEPTED_IMAGE_TYPES:

@@ -29,9 +29,15 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PORT=8000
 
 # ffmpeg powers the /studio video-compose pipeline (concat clips, mix TTS
-# and music beds). Pulls in ~150MB; the static binary is smaller but the
-# apt build is the well-trodden path.
-RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg \
+# and music beds, drawtext for burned-in captions). Pulls in ~150MB; the
+# static binary is smaller but the apt build is the well-trodden path.
+# fonts-dejavu-core gives us the DejaVuSans-Bold.ttf that drawtext loads
+# at /usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf (see
+# services/video_composer.DEFAULT_FONT_PATH).  Debian's ffmpeg ships with
+# libfreetype so the drawtext filter is available out of the box.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ffmpeg \
+        fonts-dejavu-core \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
