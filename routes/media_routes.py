@@ -394,12 +394,46 @@ class VideoJobCreate(BaseModel):
     generate_audio: bool = True
 
 
+class ClipOption(BaseModel):
+    """Per-clip transforms applied during normalisation in the compose pipeline.
+
+    Order in ``ComposeJobCreate.clip_options`` is parallel to ``source_job_ids``.
+    Any entry / field is optional — omitted values mean "no transform".
+    """
+    crop_aspect: Optional[str] = None  # "9:16" | "1:1" | "16:9" | "4:5"
+    reverse: bool = False
+    speed: float = 1.0                  # 0.25..4.0, clamped server-side
+
+
+class TransitionSpec(BaseModel):
+    """A transition between two adjacent clips in the compose sequence.
+    ``type=""`` (or missing) means a hard cut. ``duration`` is the overlap
+    in seconds (clamped 0.1..2.0)."""
+    type: str = ""
+    duration: float = 0.5
+
+
+_ALLOWED_CROP_ASPECTS = {"9:16", "1:1", "16:9", "4:5", "3:4", "4:3"}
+# Subset of ffmpeg's xfade transition names we expose in the UI.  Keep this
+# in sync with TRANSITION_CHOICES in templates/studio.html.
+_ALLOWED_TRANSITIONS = {
+    "", "fade", "fadeblack", "fadewhite",
+    "slideleft", "slideright", "slideup", "slidedown",
+    "wipeleft", "wiperight", "wipeup", "wipedown",
+    "circleopen", "circleclose", "radial", "pixelize",
+    "dissolve", "distance",
+    "smoothleft", "smoothright", "smoothup", "smoothdown",
+}
+
+
 class ComposeJobCreate(BaseModel):
     source_job_ids: List[int] = Field(..., min_length=1, max_length=10)
     keep_original_audio: bool = True
     narration_script: Optional[str] = None
     narration_voice: Optional[str] = None
     music_url: Optional[str] = None
+    clip_options: Optional[List[ClipOption]] = None
+    transitions: Optional[List[TransitionSpec]] = None
 
 
 @router.post("/api/media/jobs/compose")
@@ -427,6 +461,46 @@ async def create_compose_job(
                             detail="One or more source clips are missing, not yours, or not finished yet.")
     by_id = {s.id: s for s in sources}
     ordered_clips = [by_id[i] for i in payload.source_job_ids if i in by_id]
+
+    # Validate + normalise per-clip transforms (parallel to source_job_ids).
+    raw_opts = payload.clip_options or []
+    if raw_opts and len(raw_opts) != len(payload.source_job_ids):
+        raise HTTPException(status_code=400,
+                            detail="clip_options length must match source_job_ids.")
+    sanitized_opts: list[dict] = []
+    for opt in raw_opts:
+        crop = opt.crop_aspect
+        if crop and crop not in _ALLOWED_CROP_ASPECTS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unsupported crop_aspect '{crop}'. "
+                       f"Allowed: {', '.join(sorted(_ALLOWED_CROP_ASPECTS))}.",
+            )
+        speed = max(0.25, min(4.0, float(opt.speed or 1.0)))
+        sanitized_opts.append({
+            "crop_aspect": crop or None,
+            "reverse": bool(opt.reverse),
+            "speed": speed,
+        })
+
+    # Validate transitions (length N-1, one entry per gap between clips).
+    raw_transitions = payload.transitions or []
+    expected_trans = max(0, len(payload.source_job_ids) - 1)
+    if raw_transitions and len(raw_transitions) != expected_trans:
+        raise HTTPException(
+            status_code=400,
+            detail=f"transitions length must equal source_job_ids - 1 ({expected_trans}).",
+        )
+    sanitized_trans: list[dict] = []
+    for t in raw_transitions:
+        ttype = (t.type or "").strip()
+        if ttype not in _ALLOWED_TRANSITIONS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unsupported transition '{ttype}'.",
+            )
+        td = max(0.1, min(2.0, float(t.duration or 0.5)))
+        sanitized_trans.append({"type": ttype, "duration": td})
 
     # Credit cost: flat 50 for the compose + TTS surcharge if narration set.
     cost = 50
@@ -465,6 +539,8 @@ async def create_compose_job(
             "keep_original_audio": payload.keep_original_audio,
             "narration_voice": payload.narration_voice,
             "music_url": payload.music_url,
+            "clip_options": sanitized_opts or None,
+            "transitions": sanitized_trans or None,
         }),
     )
     db.add(job)
@@ -478,7 +554,8 @@ async def create_compose_job(
     bg.add_task(_run_compose_job, job.id, [c.result_url for c in ordered_clips],
                 payload.keep_original_audio,
                 payload.narration_script, tts_endpoint, voice_id,
-                payload.music_url, user.id)
+                payload.music_url, user.id, sanitized_opts or None,
+                sanitized_trans or None)
     request.scope["background_tasks"] = bg
     # Fire immediately if FastAPI hasn't attached a tasks runner yet.
     import asyncio as _asyncio
@@ -486,7 +563,8 @@ async def create_compose_job(
         job.id, [c.result_url for c in ordered_clips],
         payload.keep_original_audio,
         payload.narration_script, tts_endpoint, voice_id,
-        payload.music_url, user.id,
+        payload.music_url, user.id, sanitized_opts or None,
+        sanitized_trans or None,
     ))
 
     log_action(db, user, "CREATE", "MediaJob", str(job.id),
@@ -497,7 +575,9 @@ async def create_compose_job(
 async def _run_compose_job(job_id: int, clip_urls: list, keep_original: bool,
                             narration_script: Optional[str], tts_endpoint: Optional[str],
                             voice_id: Optional[str], music_url: Optional[str],
-                            user_id: int) -> None:
+                            user_id: int,
+                            clip_options: Optional[List[dict]] = None,
+                            transitions: Optional[List[dict]] = None) -> None:
     """Background worker — does the actual ffmpeg + TTS work + DB update."""
     from datetime import datetime as _dt
     from database import SessionLocal
@@ -533,6 +613,8 @@ async def _run_compose_job(job_id: int, clip_urls: list, keep_original: bool,
                 narration_path=narration_path,
                 music_path=music_path,
                 keep_original_audio=keep_original,
+                clip_options=clip_options,
+                transitions=transitions,
             )
             job.result_url = url
             job.thumbnail_url = url

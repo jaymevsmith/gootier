@@ -37,7 +37,9 @@
           {% for c in clips %}
           <div class="col-md-4 col-sm-6">
             <div class="studio-clip" data-clip-id="{{ c.id }}" data-clip-url="{{ c.result_url }}"
-                 data-clip-duration="{{ c.duration_seconds or 5 }}" role="button" tabindex="0">
+                 data-clip-duration="{{ c.duration_seconds or 5 }}"
+                 data-clip-model="{{ c.model_key }}"
+                 role="button" tabindex="0">
               <video src="{{ c.result_url }}" muted preload="metadata" playsinline></video>
               <span class="studio-clip-pos" aria-hidden="true"></span>
               <div class="studio-clip-meta">
@@ -48,6 +50,23 @@
           </div>
           {% endfor %}
         </div>
+      </div>
+    </div>
+
+    <!-- Per-clip effects + transitions editor (renders once a clip is picked) -->
+    <div class="card-x mt-3 d-none" id="studio-sequence-card">
+      <div class="card-x-header">
+        <h6><i class="fas fa-sliders me-2 text-muted"></i>Effects &amp; transitions</h6>
+        <span class="ms-auto small-meta">Crop / reverse / speed per clip, plus transitions between them.</span>
+      </div>
+      <div class="card-x-body">
+        <p class="small text-muted mb-3">
+          <strong>Crop</strong> trims each clip to a centred aspect ratio (no letterbox).
+          <strong>Reverse</strong> plays it backwards. <strong>Speed</strong> retimes it
+          (audio retimed to match). <strong>Transitions</strong> blend between adjacent clips and
+          overlap them by the chosen duration.
+        </p>
+        <div id="studio-sequence-list" class="d-flex flex-column gap-2"></div>
       </div>
     </div>
   </div>
@@ -186,30 +205,172 @@
   color: white; font-size: .68rem;
 }
 .studio-clip-meta .small-meta { color: white; opacity: .85; }
+
+/* Sequence-editor rows */
+.studio-seq-row {
+  display: grid;
+  grid-template-columns: 28px 56px 1fr auto auto auto auto;
+  gap: .6rem;
+  align-items: center;
+  padding: .5rem .6rem;
+  background: var(--g-surface-2, rgba(255,255,255,.02));
+  border: 1px solid var(--g-border-soft);
+  border-radius: var(--g-radius-md);
+}
+.studio-seq-row .seq-pos {
+  width: 28px; height: 28px;
+  background: var(--g-grad); color: white;
+  border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-weight: 700; font-size: .85rem;
+}
+.studio-seq-row .seq-thumb {
+  width: 56px; aspect-ratio: 9 / 16;
+  border-radius: var(--g-radius-sm);
+  object-fit: cover; background: #000;
+}
+.studio-seq-row .seq-label { font-size: .78rem; color: var(--g-text-muted); }
+.studio-seq-row .form-select-sm,
+.studio-seq-row .form-check-input { font-size: .78rem; }
+.studio-seq-row label.seq-rev {
+  display: inline-flex; align-items: center; gap: .3rem;
+  font-size: .75rem; color: var(--g-text-muted);
+  user-select: none; cursor: pointer; margin: 0;
+}
+@media (max-width: 720px) {
+  .studio-seq-row {
+    grid-template-columns: 28px 1fr;
+    grid-template-areas:
+      "pos label"
+      "thumb thumb"
+      "crop crop"
+      "speed speed"
+      "rev rev"
+      "dur dur";
+  }
+  .studio-seq-row .seq-pos { grid-area: pos; }
+  .studio-seq-row .seq-label { grid-area: label; }
+  .studio-seq-row .seq-thumb { grid-area: thumb; width: 100%; aspect-ratio: 9/16; max-width: 120px; }
+  .studio-seq-row .seq-crop { grid-area: crop; }
+  .studio-seq-row .seq-speed { grid-area: speed; }
+  .studio-seq-row .seq-rev { grid-area: rev; }
+  .studio-seq-row .seq-dur { grid-area: dur; }
+}
+
+/* Transition row between two clips */
+.studio-trans-row {
+  display: grid;
+  grid-template-columns: 28px auto 1fr 110px;
+  gap: .6rem;
+  align-items: center;
+  padding: .35rem .6rem .35rem 1.5rem;
+  margin: 0 1rem;
+  background: var(--g-surface-2, rgba(102,126,234,.04));
+  border-left: 2px dashed var(--g-border-soft);
+  border-right: 2px dashed var(--g-border-soft);
+  font-size: .78rem;
+}
+.studio-trans-row .small-meta { font-size: .72rem; }
+@media (max-width: 720px) {
+  .studio-trans-row {
+    grid-template-columns: auto 1fr;
+    grid-template-areas:
+      "icon  label"
+      "type  type"
+      "dur   dur";
+    padding: .35rem .6rem;
+    margin: 0;
+  }
+  .studio-trans-row > i        { grid-area: icon; }
+  .studio-trans-row > .small-meta { grid-area: label; }
+  .studio-trans-row .trans-type { grid-area: type; }
+  .studio-trans-row .trans-dur  { grid-area: dur; }
+}
 </style>
 
 <script>
 {% if clips %}
 const picked = [];  // ordered array of clip IDs
-const clipMeta = {};  // id -> {url, duration}
+const clipMeta = {};  // id -> {url, duration, model}
+const clipOpts = {}; // id -> {crop_aspect, reverse, speed}
+const transitions = []; // parallel to picked; transitions[i] sits between clip i and clip i+1
+const TRANSITION_CHOICES = [
+  ['',           'None (hard cut)'],
+  ['fade',       'Cross-dissolve'],
+  ['fadeblack',  'Fade through black'],
+  ['fadewhite',  'Fade through white'],
+  ['slideleft',  'Slide left'],
+  ['slideright', 'Slide right'],
+  ['slideup',    'Slide up'],
+  ['slidedown',  'Slide down'],
+  ['wipeleft',   'Wipe left'],
+  ['wiperight',  'Wipe right'],
+  ['circleopen', 'Circle open'],
+  ['circleclose','Circle close'],
+  ['radial',     'Radial'],
+  ['pixelize',   'Pixelize'],
+  ['dissolve',   'Dissolve (noise)'],
+];
+const TRANSITION_DURATIONS = [0.25, 0.5, 0.75, 1.0];
+const CROP_CHOICES = [
+  ['', 'Original (letterbox)'],
+  ['9:16', '9:16 (vertical)'],
+  ['1:1', '1:1 (square)'],
+  ['4:5', '4:5 (portrait)'],
+  ['16:9', '16:9 (landscape)'],
+  ['4:3', '4:3'],
+  ['3:4', '3:4'],
+];
+const SPEED_CHOICES = [
+  [0.25, '0.25× (super slow-mo)'],
+  [0.5,  '0.5× (slow-mo)'],
+  [0.75, '0.75×'],
+  [1,    '1× (normal)'],
+  [1.5,  '1.5×'],
+  [2,    '2× (fast-fwd)'],
+  [4,    '4× (very fast)'],
+];
+
 document.querySelectorAll('.studio-clip').forEach(el => {
   const id = parseInt(el.dataset.clipId, 10);
   clipMeta[id] = {
     url: el.dataset.clipUrl,
     duration: parseFloat(el.dataset.clipDuration || '5'),
+    model: el.dataset.clipModel || '',
   };
   el.addEventListener('click', () => toggleClip(id));
   el.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleClip(id); } });
 });
 
+function defaultOpts() {
+  return { crop_aspect: '', reverse: false, speed: 1 };
+}
+
 function toggleClip(id) {
   const idx = picked.indexOf(id);
-  if (idx >= 0) picked.splice(idx, 1);
-  else if (picked.length < 10) picked.push(id);
-  else { TJ.notify.warning('Max 10 clips per compose.'); return; }
+  if (idx >= 0) {
+    picked.splice(idx, 1);
+    delete clipOpts[id];
+  } else if (picked.length < 10) {
+    picked.push(id);
+    clipOpts[id] = defaultOpts();
+  } else { TJ.notify.warning('Max 10 clips per compose.'); return; }
+  // Keep the transitions array length in sync (N-1 entries).
+  const wanted = Math.max(0, picked.length - 1);
+  while (transitions.length < wanted) transitions.push({ type: '', duration: 0.5 });
+  transitions.length = wanted;
   paintGrid();
+  paintSequence();
   paintCost();
 }
+
+function effectiveDuration(id) {
+  const meta = clipMeta[id];
+  const opts = clipOpts[id] || defaultOpts();
+  const speed = parseFloat(opts.speed) || 1;
+  return meta.duration / speed;
+}
+
 function paintGrid() {
   document.querySelectorAll('.studio-clip').forEach(el => {
     const id = parseInt(el.dataset.clipId, 10);
@@ -217,12 +378,113 @@ function paintGrid() {
     el.classList.toggle('active', pos >= 0);
     el.querySelector('.studio-clip-pos').textContent = pos >= 0 ? (pos + 1) : '';
   });
-  const total = picked.reduce((s, id) => s + clipMeta[id].duration, 0);
+  // Sum of effective clip durations minus transition overlap (xfade reuses
+  // the last `duration` seconds of the outgoing clip).
+  let total = picked.reduce((s, id) => s + effectiveDuration(id), 0);
+  for (let i = 0; i < picked.length - 1; i++) {
+    const t = transitions[i];
+    if (t && t.type) total -= parseFloat(t.duration) || 0;
+  }
   const meta = document.getElementById('studio-pick-meta');
   const over = total > 60;
   meta.innerHTML = `${picked.length} clips picked &middot; ~${total.toFixed(0)}s total &middot; cap 60s`;
   meta.style.color = over ? 'var(--g-warning)' : '';
-  document.getElementById('studio-submit').disabled = picked.length < 2;
+  // One-clip compose is allowed (e.g. just crop / reverse / speed a single clip).
+  document.getElementById('studio-submit').disabled = picked.length < 1;
+}
+
+function paintSequence() {
+  const card = document.getElementById('studio-sequence-card');
+  const list = document.getElementById('studio-sequence-list');
+  if (!picked.length) { card.classList.add('d-none'); list.innerHTML = ''; return; }
+  card.classList.remove('d-none');
+
+  const rows = [];
+  picked.forEach((id, i) => {
+    const meta = clipMeta[id];
+    const opts = clipOpts[id] || defaultOpts();
+    const cropOpts = CROP_CHOICES.map(
+      ([val, lbl]) => `<option value="${val}"${opts.crop_aspect === val ? ' selected' : ''}>${lbl}</option>`
+    ).join('');
+    const speedOpts = SPEED_CHOICES.map(
+      ([val, lbl]) => `<option value="${val}"${parseFloat(opts.speed) === val ? ' selected' : ''}>${lbl}</option>`
+    ).join('');
+    const eff = effectiveDuration(id);
+    rows.push(`
+      <div class="studio-seq-row" data-clip-id="${id}">
+        <div class="seq-pos">${i + 1}</div>
+        <video class="seq-thumb" src="${meta.url}" muted preload="metadata" playsinline></video>
+        <div class="seq-label">
+          <div>~${meta.duration.toFixed(0)}s &middot; ${meta.model || 'clip'}</div>
+        </div>
+        <select class="form-select form-select-sm seq-crop" data-field="crop_aspect" aria-label="Crop aspect">
+          ${cropOpts}
+        </select>
+        <select class="form-select form-select-sm seq-speed" data-field="speed" aria-label="Speed">
+          ${speedOpts}
+        </select>
+        <label class="seq-rev">
+          <input type="checkbox" class="form-check-input" data-field="reverse" ${opts.reverse ? 'checked' : ''}>
+          <span>Reverse</span>
+        </label>
+        <span class="small-meta seq-dur">→ ${eff.toFixed(1)}s</span>
+      </div>
+    `);
+
+    // Transition row between this clip and the next one.
+    if (i < picked.length - 1) {
+      const t = transitions[i] || { type: '', duration: 0.5 };
+      const typeOpts = TRANSITION_CHOICES.map(
+        ([val, lbl]) => `<option value="${val}"${t.type === val ? ' selected' : ''}>${lbl}</option>`
+      ).join('');
+      const durOpts = TRANSITION_DURATIONS.map(
+        d => `<option value="${d}"${parseFloat(t.duration) === d ? ' selected' : ''}>${d}s</option>`
+      ).join('');
+      rows.push(`
+        <div class="studio-trans-row" data-trans-index="${i}">
+          <i class="fas fa-arrow-down text-muted"></i>
+          <span class="small-meta">Transition</span>
+          <select class="form-select form-select-sm trans-type" data-field="type" aria-label="Transition type">
+            ${typeOpts}
+          </select>
+          <select class="form-select form-select-sm trans-dur" data-field="duration" aria-label="Transition duration">
+            ${durOpts}
+          </select>
+        </div>
+      `);
+    }
+  });
+
+  list.innerHTML = rows.join('');
+
+  // Wire up per-clip change listeners on the freshly rendered rows.
+  list.querySelectorAll('.studio-seq-row').forEach(row => {
+    const id = parseInt(row.dataset.clipId, 10);
+    row.querySelectorAll('[data-field]').forEach(input => {
+      input.addEventListener('change', () => {
+        const field = input.dataset.field;
+        if (field === 'reverse') clipOpts[id].reverse = input.checked;
+        else if (field === 'speed') clipOpts[id].speed = parseFloat(input.value) || 1;
+        else clipOpts[id][field] = input.value || '';
+        paintGrid();      // total duration depends on speed
+        paintSequence();  // re-render to refresh the effective-duration label
+      });
+    });
+  });
+
+  // Wire up transition change listeners.
+  list.querySelectorAll('.studio-trans-row').forEach(row => {
+    const i = parseInt(row.dataset.transIndex, 10);
+    if (!transitions[i]) transitions[i] = { type: '', duration: 0.5 };
+    row.querySelectorAll('[data-field]').forEach(input => {
+      input.addEventListener('change', () => {
+        const field = input.dataset.field;
+        if (field === 'duration') transitions[i].duration = parseFloat(input.value) || 0.5;
+        else transitions[i].type = input.value || '';
+        paintGrid();  // total duration shrinks slightly with xfade overlap
+      });
+    });
+  });
 }
 
 const narrChk = document.getElementById('audio-add-narration');
@@ -248,7 +510,22 @@ function paintCost() {
 }
 
 document.getElementById('studio-submit').addEventListener('click', async () => {
-  if (picked.length < 2) return;
+  if (picked.length < 1) return;
+  const clipOptionsPayload = picked.map(id => {
+    const o = clipOpts[id] || defaultOpts();
+    return {
+      crop_aspect: o.crop_aspect || null,
+      reverse: !!o.reverse,
+      speed: parseFloat(o.speed) || 1,
+    };
+  });
+  // Transitions are length N-1 (only meaningful when there are 2+ clips).
+  const transitionsPayload = picked.length >= 2
+    ? transitions.slice(0, picked.length - 1).map(t => ({
+        type: (t && t.type) || '',
+        duration: t && t.duration ? parseFloat(t.duration) : 0.5,
+      }))
+    : null;
   const payload = {
     source_job_ids: [...picked],
     keep_original_audio: document.getElementById('audio-keep-original').checked,
@@ -256,6 +533,8 @@ document.getElementById('studio-submit').addEventListener('click', async () => {
     narration_voice: document.getElementById('narration-voice').value || null,
     music_url: musicChk.checked && document.getElementById('music-url').value.trim()
                 ? document.getElementById('music-url').value.trim() : null,
+    clip_options: clipOptionsPayload,
+    transitions: transitionsPayload,
   };
 
   const modalEl = document.getElementById('compose-modal');
