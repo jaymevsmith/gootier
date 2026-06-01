@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block title %}Offline &middot; Gootier{% endblock %}
+
+{% block content %}
+<div class="empty-state" style="max-width: 480px; margin: 4rem auto;">
+  <div class="empty-icon"><i class="fas fa-wifi"></i></div>
+  <h5>You're offline</h5>
+  <p class="text-muted">
+    Gootier needs a network connection to load this page.  Anything you've already opened
+    in this session should still be available from your browser history.
+  </p>
+  <button type="button" class="btn tj-grad-btn" onclick="location.reload()">
+    <i class="fas fa-arrows-rotate me-2"></i>Try again
+  </button>
+</div>
+{% endblock %}

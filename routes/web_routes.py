@@ -26,6 +26,37 @@ async def root(user: User = Depends(get_current_user_optional)):
     return RedirectResponse(url="/dashboard" if user else "/login", status_code=303)
 
 
+@router.get("/sw.js", include_in_schema=False)
+async def service_worker():
+    """Serve the PWA service worker at the origin root.
+
+    The service worker's *scope* (which pages it controls) is bounded by
+    the URL path it's served from — `/static/sw.js` would only control
+    `/static/*`, which is useless.  Serving it at `/sw.js` lets it
+    control the entire origin.  Cache headers stay short so SW updates
+    pick up quickly on the next page load.
+    """
+    from fastapi.responses import FileResponse
+    return FileResponse(
+        "static/sw.js",
+        media_type="application/javascript",
+        headers={
+            "Service-Worker-Allowed": "/",
+            "Cache-Control": "public, max-age=0, must-revalidate",
+        },
+    )
+
+
+@router.get("/offline", include_in_schema=False)
+async def offline_page(request: Request):
+    """Static offline fallback served by the SW when navigation fails.
+
+    Auth-optional on purpose so it works even if the user's session is
+    stale.  Kept extremely lightweight so it's quick to cache.
+    """
+    return templates.TemplateResponse(request, "offline.html", {"user": None})
+
+
 @router.get("/dashboard")
 async def dashboard(
     request: Request,
