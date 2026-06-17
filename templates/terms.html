@@ -1,0 +1,152 @@
+{% extends "public_base.html" %}
+{% block title %}Terms of Service &middot; Gootier{% endblock %}
+
+{% block page_header %}
+<div class="page-header-row">
+  <div>
+    <div class="eyebrow">Legal</div>
+    <h1>Terms of Service</h1>
+    <p class="lede">Last updated: {{ updated_date }}</p>
+  </div>
+</div>
+{% endblock %}
+
+{% block content %}
+<div class="card-x">
+  <div class="card-x-body legal-prose">
+
+    <h5>Acceptance</h5>
+    <p>
+      These Terms of Service ("Terms") are a contract between you and Jhome Automation
+      ("we", "us"), the operator of Gootier
+      (<a href="https://gootier.jhomeautomation.com">gootier.jhomeautomation.com</a>).
+      By creating an account or using Gootier you agree to these Terms and to our
+      <a href="/privacy">Privacy Policy</a>.  If you do not agree, do not use Gootier.
+    </p>
+
+    <h5>The service</h5>
+    <p>Gootier is a software-as-a-service product that lets you compose, schedule, and
+       publish social-media posts and email blasts; generate marketing copy, images,
+       videos, and music with AI tools; and connect third-party social accounts via
+       OAuth.  Some features cost credits or require a paid subscription.</p>
+
+    <h5>Your account</h5>
+    <ul>
+      <li>You must provide accurate registration information and keep it current.</li>
+      <li>You are responsible for your account credentials and for everything that
+        happens under your account.  Notify us immediately if you suspect unauthorized
+        access.</li>
+      <li>You must be at least 13 (or the applicable age in your country) to use Gootier,
+        and old enough to enter into a binding contract in your jurisdiction.</li>
+      <li>One human per account.  Don't sell, transfer, or share your account.</li>
+    </ul>
+
+    <h5>Your content</h5>
+    <p>You retain ownership of everything you upload, write, or generate with Gootier
+       ("Your Content").  By using Gootier, you grant us a limited, non-exclusive, royalty-free
+       license to host, process, transmit, modify (for technical purposes such as encoding
+       and compression), and display Your Content solely to provide the service to you.
+       This license ends when you delete the content or close your account, except where we
+       must retain it to comply with law.</p>
+    <p>You represent that you have all the rights necessary to use Your Content with Gootier
+       — including for any images, audio, video, or recipient email addresses you upload or
+       reference.</p>
+
+    <h5>AI-generated output</h5>
+    <p>Gootier's AI features may produce inaccurate, biased, or otherwise unsuitable output.
+       You are responsible for reviewing every piece of AI output before you publish, send, or
+       distribute it.  Generated output may resemble output produced for other users; we do
+       not guarantee its uniqueness.  Where required by an underlying provider's policies, you
+       agree to follow any applicable disclosure rules when posting AI-generated content.</p>
+
+    <h5>Connected social accounts</h5>
+    <p>When you connect a Facebook, Instagram, X, LinkedIn, TikTok, or YouTube account, you
+       authorize Gootier to publish on your behalf using the scopes you grant.  You remain
+       bound by each platform's own terms.  You can disconnect at any time from the
+       <a href="/connections">Connections</a> page; pending scheduled posts to a disconnected
+       account will fail and you will not be charged for the failed publish.</p>
+
+    <h5>Acceptable use</h5>
+    <p>You agree not to use Gootier to:</p>
+    <ul>
+      <li>send spam, run unsolicited bulk email, or harvest contact lists you have no consent
+        to message;</li>
+      <li>publish content that is illegal, infringing, defamatory, deceptive, harassing,
+        sexually explicit involving minors, or that promotes violence or self-harm;</li>
+      <li>impersonate any person or entity, or misrepresent your affiliation;</li>
+      <li>infringe any intellectual property, privacy, publicity, or contractual right;</li>
+      <li>circumvent rate limits, abuse our credits system, scrape Gootier, or interfere
+        with the security or operation of the service;</li>
+      <li>build a competing product using Gootier's outputs.</li>
+    </ul>
+    <p>We may suspend or terminate accounts that violate these rules, and we may remove
+       content that violates them.</p>
+
+    <h5>Credits, subscriptions, and refunds</h5>
+    <ul>
+      <li><strong>Subscriptions</strong> are billed in advance through Stripe and renew
+        automatically until cancelled.  Cancel any time from the billing settings — your
+        plan remains active through the end of the current billing period.</li>
+      <li><strong>Credits</strong> are consumed when you use paid features (AI generation,
+        compose, music gen, etc.).  Credits do not expire unless your account is closed.
+        Failed paid jobs are auto-refunded to your credit balance.</li>
+      <li>Charges already paid are non-refundable except where required by law or where we
+        explicitly grant a refund.</li>
+      <li>If a third-party service we rely on (a social platform, an AI provider, etc.)
+        changes terms or pricing, we may adjust ours with reasonable notice.</li>
+    </ul>
+
+    <h5>Suspension and termination</h5>
+    <p>We may suspend or close your account if you violate these Terms or use Gootier in a
+       way that risks harm to us, our users, or any third party.  You can close your account
+       at any time from your profile settings; we will delete or anonymize your data as
+       described in the Privacy Policy.</p>
+
+    <h5>Service availability</h5>
+    <p>We do our best to keep Gootier running but we don't guarantee uninterrupted or
+       error-free service.  Scheduled maintenance, third-party outages (OAuth provider down,
+       AI vendor degraded, etc.), and unexpected incidents will occasionally affect
+       availability.</p>
+
+    <h5>Disclaimers</h5>
+    <p>Gootier is provided "as is" and "as available", without warranties of any kind
+       (express, implied, statutory, or otherwise), including merchantability, fitness for a
+       particular purpose, and non-infringement.  We do not warrant that the service will
+       meet your requirements, that any specific result will be obtained, or that AI output
+       will be accurate or suitable for your intended use.</p>
+
+    <h5>Limitation of liability</h5>
+    <p>To the maximum extent permitted by law, we are not liable for any indirect,
+       incidental, special, consequential, exemplary, or punitive damages, or for any loss
+       of profits, revenue, data, goodwill, or other intangible losses, arising from your
+       use of (or inability to use) Gootier.  Our total liability to you for any claim
+       arising out of or relating to Gootier will not exceed the greater of (a) the amount
+       you paid us in the 12 months before the event giving rise to the claim, or (b) USD 50.</p>
+
+    <h5>Indemnification</h5>
+    <p>You agree to indemnify and hold harmless Jhome Automation, its officers, contractors,
+       and partners from any claim or demand (including reasonable attorneys' fees) made by
+       any third party arising out of Your Content, your use of the service, or your
+       violation of these Terms or any applicable law.</p>
+
+    <h5>Changes to the service or the Terms</h5>
+    <p>We may add, remove, or change features over time.  We may also update these Terms;
+       material changes will be flagged in-app or by email and take effect 14 days after
+       notice, unless you reject them by closing your account.  Continued use after the
+       notice period means you accept the updated Terms.</p>
+
+    <h5>Governing law</h5>
+    <p>These Terms are governed by the laws of the State of Florida, USA, without regard to
+       conflict-of-laws principles.  Disputes must be brought in the state or federal courts
+       located in Florida, except where local consumer-protection law gives you the right to
+       sue in your own jurisdiction.</p>
+
+    <h5>Contact</h5>
+    <p>
+      Questions about these Terms?
+      Email <a href="mailto:support@jhomeautomation.com">support@jhomeautomation.com</a>.
+    </p>
+
+  </div>
+</div>
+{% endblock %}

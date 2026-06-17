@@ -1,0 +1,63 @@
+<!doctype html>
+{# Minimal layout for unauthenticated public pages (privacy, terms, future
+   marketing pages).  Mirrors base.html's chrome assets so the theme,
+   Aurora retones, and PWA hooks still work, but skips the authenticated
+   sidebar + dashboard nav.  Logged-in users still see the same header
+   styles; they just don't get the full app shell. #}
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>{% block title %}Gootier{% endblock %}</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+  <link rel="stylesheet" href="/static/css/colors_and_type.css">
+  <link rel="stylesheet" href="/static/css/design-system.css">
+  {% if request.cookies.get('gootier_theme') == 'aurora' %}
+  <link rel="stylesheet" href="/static/css/gootier-sleek.css">
+  {% endif %}
+
+  <link rel="manifest" href="/static/manifest.webmanifest">
+  <meta name="theme-color" content="#667eea">
+  <link rel="icon" type="image/png" sizes="192x192" href="/static/icons/icon-192.png">
+  <link rel="apple-touch-icon" href="/static/icons/apple-touch-icon.png">
+</head>
+<body data-theme="{{ 'aurora' if request.cookies.get('gootier_theme') == 'aurora' else 'light' }}">
+
+<header class="public-header">
+  <a href="/" class="public-brand">Gootier</a>
+  <nav class="public-nav" aria-label="Public navigation">
+    <a href="/privacy" {% if request.url.path == '/privacy' %}aria-current="page"{% endif %}>Privacy</a>
+    <a href="/terms"   {% if request.url.path == '/terms'   %}aria-current="page"{% endif %}>Terms</a>
+    {% if user %}
+      <a href="/dashboard" class="btn tj-grad-btn btn-sm">Dashboard</a>
+    {% else %}
+      <a href="/login" class="btn tj-grad-btn btn-sm">Sign in</a>
+    {% endif %}
+  </nav>
+</header>
+
+<main class="public-main" id="main-content">
+  <header class="page-header">{% block page_header %}{% endblock %}</header>
+  <div class="page-content">{% block content %}{% endblock %}</div>
+</main>
+
+<footer class="app-footer">
+  <div>Powered by <a href="https://jhomeautomation.com" target="_blank" rel="noopener noreferrer">Jhome Automation</a></div>
+  <div class="app-footer-legal">
+    <a href="/privacy">Privacy</a>
+    <span aria-hidden="true">&middot;</span>
+    <a href="/terms">Terms</a>
+  </div>
+</footer>
+
+<script>
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('/sw.js').catch(() => {});
+    });
+  }
+</script>
+{% block scripts %}{% endblock %}
+</body>
+</html>

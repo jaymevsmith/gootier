@@ -1,0 +1,134 @@
+{% extends "public_base.html" %}
+{% block title %}Privacy Policy &middot; Gootier{% endblock %}
+
+{% block page_header %}
+<div class="page-header-row">
+  <div>
+    <div class="eyebrow">Legal</div>
+    <h1>Privacy Policy</h1>
+    <p class="lede">Last updated: {{ updated_date }}</p>
+  </div>
+</div>
+{% endblock %}
+
+{% block content %}
+<div class="card-x">
+  <div class="card-x-body legal-prose">
+
+    <h5>Who we are</h5>
+    <p>
+      Gootier is a social-media scheduling and content-creation service operated by
+      <strong>Jhome Automation</strong>.  When this policy uses "we", "us", or "our",
+      it means Jhome Automation acting as the operator of Gootier
+      (<a href="https://gootier.jhomeautomation.com">gootier.jhomeautomation.com</a>).
+    </p>
+
+    <h5>What this policy covers</h5>
+    <p>
+      This policy explains what information we collect when you use Gootier, how we use it,
+      who we share it with, and the choices you have.  By using Gootier you agree to the
+      handling of information as described here.
+    </p>
+
+    <h5>Information you give us directly</h5>
+    <ul>
+      <li><strong>Account details</strong> — your email address and a hashed password when you sign up.</li>
+      <li><strong>Content you create</strong> — the social posts, captions, email blasts, images,
+        videos, recipient lists, and other material you compose, upload, or schedule inside Gootier.</li>
+      <li><strong>Marketing plans and briefs</strong> — anything you provide to the AI tools
+        (campaign briefs, video sequence prompts, etc.) so we can generate output for you.</li>
+      <li><strong>Billing information</strong> — payment is processed by Stripe.  We never see
+        your card number; Stripe gives us back only the last four digits, brand, and a customer ID.</li>
+    </ul>
+
+    <h5>Information we collect automatically</h5>
+    <ul>
+      <li><strong>Usage logs</strong> — page paths, API endpoints called, action timestamps,
+        and high-level outcomes (success / failure) — used to diagnose problems and meter usage.</li>
+      <li><strong>Device + browser</strong> — IP address, user-agent, and PWA installation state
+        (so we know whether to surface the install banner).</li>
+      <li><strong>Cookies</strong> — a session cookie for authentication, a CSRF cookie, and a
+        theme cookie (Aurora vs. light).  We do not use third-party advertising cookies.</li>
+    </ul>
+
+    <h5>Information from third parties</h5>
+    <p>When you connect a social channel (Facebook, Instagram, X, LinkedIn, TikTok, YouTube),
+       the OAuth provider gives Gootier:</p>
+    <ul>
+      <li>An access token (so we can publish on your behalf), often with a refresh token.</li>
+      <li>The page / account / channel ID you authorized us to post to.</li>
+      <li>Public profile data the provider exposes for that scope (typically: account name,
+        avatar URL, page ID).</li>
+    </ul>
+    <p>OAuth access tokens are encrypted at rest before being written to the database.  You can
+       revoke our access at any time from the <a href="/connections">Connections</a> page or
+       from the provider's own settings, and the corresponding token row is deleted from our
+       store.</p>
+
+    <h5>How we use your information</h5>
+    <ul>
+      <li>To provide the service — schedule and publish posts, send email blasts, render
+        videos in the studio, generate AI campaign drafts, deliver push notifications.</li>
+      <li>To bill you and process credit purchases via Stripe.</li>
+      <li>To send transactional emails (account confirmation, password reset, scheduled-post
+        receipts).  We do not send marketing email to your address unless you opt in.</li>
+      <li>To protect Gootier and our users from abuse, fraud, and security incidents.</li>
+      <li>To improve the product based on aggregated usage patterns.</li>
+    </ul>
+
+    <h5>Who we share it with</h5>
+    <p>We do not sell your personal information.  We share data only with the service providers
+       we need to operate Gootier, and only for the purposes listed:</p>
+    <ul>
+      <li><strong>Railway</strong> — application hosting and managed Postgres database.</li>
+      <li><strong>Stripe</strong> — payment processing and subscription management.</li>
+      <li><strong>AI providers</strong> — the briefs / prompts you submit to the AI tools are
+        sent to our underlying AI provider for inference.  Output is not retained by the provider
+        for model training in the configurations we use.</li>
+      <li><strong>fal.ai</strong> — image, video, music, and TTS generation.  Generated assets
+        are stored on fal's CDN and are linked from our database.</li>
+      <li><strong>Social platforms</strong> — when you publish a post, its content is sent to
+        the platform you authorized (Facebook, Instagram, X, LinkedIn, TikTok, YouTube).</li>
+      <li><strong>SMTP provider</strong> — outgoing email delivery for blasts and transactional mail.</li>
+      <li><strong>Legal compliance</strong> — we may disclose information if required by valid
+        legal process or to protect rights, property, or safety.</li>
+    </ul>
+
+    <h5>How long we keep it</h5>
+    <ul>
+      <li>Account records — for as long as your account is active.</li>
+      <li>Posts, drafts, generated media — until you delete them or close your account.</li>
+      <li>Audit / action logs — up to 18 months for security and abuse investigation.</li>
+      <li>Billing records — as long as required by tax and accounting law.</li>
+    </ul>
+    <p>When you delete your account, we delete or anonymize the above within 30 days, except
+       where retention is required by law.</p>
+
+    <h5>Your rights</h5>
+    <p>Depending on where you live, you may have the right to access, correct, export, or
+       delete the personal information we hold about you, and to object to or restrict
+       certain processing.  You can also withdraw any consent you previously gave.  Email
+       <a href="mailto:privacy@jhomeautomation.com">privacy@jhomeautomation.com</a> to make a
+       request and we will respond within 30 days.</p>
+
+    <h5>Security</h5>
+    <p>We use HTTPS everywhere, encrypt OAuth tokens at rest, hash passwords with bcrypt, and
+       run on managed infrastructure with vendor-provided database backups.  No internet
+       service is perfectly secure — if you suspect your account has been compromised, please
+       contact us immediately so we can investigate.</p>
+
+    <h5>Children</h5>
+    <p>Gootier is not directed to children under 13 (or the applicable age in your country).
+       Do not use Gootier if you are below this age.</p>
+
+    <h5>Changes to this policy</h5>
+    <p>We may update this policy when our practices change.  Material changes will be flagged
+       in-app or by email.  The "Last updated" date above always reflects the current revision.</p>
+
+    <h5>Contact</h5>
+    <p>Questions about this policy?
+      Email <a href="mailto:privacy@jhomeautomation.com">privacy@jhomeautomation.com</a>.</p>
+
+  </div>
+</div>
+{% endblock %}

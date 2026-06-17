@@ -16,6 +16,10 @@ from services.quotas import usage_summary
 router = APIRouter()
 templates = Jinja2Templates(directory="templates")
 
+# Bump this string whenever the privacy or terms copy materially changes — it
+# renders on both pages and signals to users that the policy was revised.
+_LEGAL_LAST_UPDATED = "June 10, 2026"
+
 
 def _ctx(user: User, **extra) -> dict:
     return {"user": user, **extra}
@@ -45,6 +49,34 @@ async def service_worker():
             "Cache-Control": "public, max-age=0, must-revalidate",
         },
     )
+
+
+@router.get("/privacy", include_in_schema=False)
+async def privacy_page(
+    request: Request,
+    user: User = Depends(get_current_user_optional),
+):
+    """Public privacy policy.  Required by every social OAuth provider's
+    app-review process — Facebook, Instagram, X, LinkedIn, TikTok, and
+    YouTube all ask for a privacy URL.  Intentionally unauthenticated, but
+    we still pass `user` so the public layout can swap Sign in → Dashboard
+    when a logged-in user happens to land here."""
+    return templates.TemplateResponse(request, "privacy.html", {
+        "user": user,
+        "updated_date": _LEGAL_LAST_UPDATED,
+    })
+
+
+@router.get("/terms", include_in_schema=False)
+async def terms_page(
+    request: Request,
+    user: User = Depends(get_current_user_optional),
+):
+    """Public terms of service.  Linked from sign-up + the footer."""
+    return templates.TemplateResponse(request, "terms.html", {
+        "user": user,
+        "updated_date": _LEGAL_LAST_UPDATED,
+    })
 
 
 @router.get("/offline", include_in_schema=False)

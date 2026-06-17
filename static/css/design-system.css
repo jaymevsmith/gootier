@@ -288,6 +288,86 @@ a:hover { color: var(--g-primary-2); text-decoration: underline; }
 }
 .app-footer a:hover { color: var(--g-primary-2); }
 
+.app-footer-legal {
+  margin-top: .25rem;
+  display: inline-flex;
+  gap: .5rem;
+  align-items: center;
+  font-size: .76rem;
+  color: var(--g-text-3);
+  opacity: .85;
+}
+.app-footer-legal a { color: var(--g-text-3); font-weight: 400; }
+.app-footer-legal a:hover { color: var(--g-primary); text-decoration: underline; }
+
+/* Public unauthenticated layout (privacy / terms / future marketing).
+   Minimal header + main + footer; no sidebar.  */
+.public-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1rem 1.5rem;
+  border-bottom: 1px solid var(--g-border-soft);
+  background: var(--g-bg-elev-1, var(--g-bg-1));
+}
+.public-brand {
+  font-weight: 800;
+  font-size: 1.1rem;
+  color: var(--g-text-strong, var(--g-text-1));
+  text-decoration: none;
+  letter-spacing: -.01em;
+}
+.public-brand:hover { color: var(--g-primary); }
+.public-nav {
+  display: flex;
+  align-items: center;
+  gap: 1.1rem;
+  font-size: .9rem;
+}
+.public-nav a:not(.btn) {
+  color: var(--g-text-2);
+  text-decoration: none;
+}
+.public-nav a:not(.btn):hover { color: var(--g-primary); }
+.public-nav a[aria-current="page"] {
+  color: var(--g-primary);
+  font-weight: 600;
+}
+.public-main {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 2rem 1.5rem;
+  flex: 1;
+}
+@media (max-width: 600px) {
+  .public-header { padding: .75rem 1rem; }
+  .public-nav { gap: .6rem; font-size: .85rem; }
+  .public-main { padding: 1rem .75rem 2rem; }
+}
+
+/* Long-form legal pages (privacy / terms) — narrower readable measure,
+   tighter heading hierarchy, comfortable list spacing. */
+.legal-prose {
+  max-width: 760px;
+  line-height: 1.6;
+  color: var(--g-text-2);
+}
+.legal-prose h5 {
+  font-size: 1rem;
+  font-weight: 700;
+  margin: 1.75rem 0 .6rem;
+  color: var(--g-text-strong, var(--g-text-1));
+  letter-spacing: .01em;
+}
+.legal-prose h5:first-child { margin-top: 0; }
+.legal-prose p,
+.legal-prose ul { margin-bottom: .9rem; }
+.legal-prose ul { padding-left: 1.25rem; }
+.legal-prose li { margin-bottom: .35rem; }
+.legal-prose a { color: var(--g-primary); text-decoration: underline; text-underline-offset: .15em; }
+.legal-prose a:hover { color: var(--g-primary-2); }
+.legal-prose strong { color: var(--g-text-strong, var(--g-text-1)); }
+
 /* Responsive */
 @media (max-width: 900px) {
   .app-sidebar {
