@@ -686,3 +686,218 @@ async def tiktok_callback(
     response = RedirectResponse(url="/connections", status_code=303)
     set_flash(response, "success", f"Connected TikTok account: {display}.")
     return response
+
+
+# --------------------------------------------------------------------------- #
+# "Sign in with Google" — identity-only OAuth (NOT a social connection).
+#
+# Reuses the YouTube OAuth client by default (Google's developer console
+# issues one client ID per project; you just register multiple redirect URIs
+# under it).  Setting GOOGLE_AUTH_CLIENT_ID/SECRET overrides that fallback
+# if you'd rather use a dedicated client for sign-in.
+# --------------------------------------------------------------------------- #
+
+def _google_auth_client_id() -> str:
+    return get_env("GOOGLE_AUTH_CLIENT_ID", "") or get_env("YOUTUBE_CLIENT_ID", "")
+
+
+def _google_auth_client_secret() -> str:
+    return get_env("GOOGLE_AUTH_CLIENT_SECRET", "") or get_env("YOUTUBE_CLIENT_SECRET", "")
+
+
+def _google_auth_redirect() -> str:
+    return get_env(
+        "GOOGLE_AUTH_REDIRECT",
+        "http://localhost:8000/oauth/google/callback",
+    )
+
+
+GOOGLE_AUTHORIZE = "https://accounts.google.com/o/oauth2/v2/auth"
+GOOGLE_TOKEN     = "https://oauth2.googleapis.com/token"
+GOOGLE_USERINFO  = "https://openidconnect.googleapis.com/v1/userinfo"
+# openid -> get a stable Google account ID in the `sub` claim
+# email   -> read the user's email address + email_verified
+# profile -> read display name (used as nickname)
+GOOGLE_AUTH_SCOPES = "openid email profile"
+
+
+@router.get("/google/start", include_in_schema=False)
+async def google_auth_start():
+    """Kicks off "Sign in with Google".  Unauthenticated — that's the point."""
+    if not _google_auth_client_id():
+        raise HTTPException(status_code=503, detail="Google sign-in is not configured")
+    # _sign_state takes a user_id, but we don't have one yet (we're signing IN).
+    # Pass 0 — the signature still binds the nonce to our SECRET_KEY, so a
+    # forged callback can't be replayed without the secret.
+    params = {
+        "client_id": _google_auth_client_id(),
+        "redirect_uri": _google_auth_redirect(),
+        "response_type": "code",
+        "scope": GOOGLE_AUTH_SCOPES,
+        "state": _sign_state(0),
+        "access_type": "online",            # no refresh token needed — we just want identity
+        "include_granted_scopes": "true",
+        "prompt": "select_account",         # always show the account picker
+    }
+    return RedirectResponse(url=f"{GOOGLE_AUTHORIZE}?{urlencode(params)}", status_code=303)
+
+
+@router.get("/google/callback", include_in_schema=False)
+async def google_auth_callback(
+    request: Request,
+    code: str = "",
+    state: str = "",
+    error: str = "",
+    db: Session = Depends(get_db),
+):
+    """Receives Google's callback, finds-or-creates the User, sets the JWT
+    cookie, and redirects to /dashboard.  Returns 400 on any forged or
+    malformed input so a stray callback URL never auto-creates an account."""
+    from datetime import datetime
+    import secrets as _py_secrets
+    from auth import (
+        COOKIE_NAME, TOKEN_TTL_MINUTES, create_access_token, hash_password,
+    )
+    from services.flash import set_flash
+
+    if error:
+        return _google_auth_fail(request, f"Google declined the sign-in: {error}")
+    if not code:
+        return _google_auth_fail(request, "Missing OAuth code from Google.")
+    if _verify_state(state, 0) is None:
+        return _google_auth_fail(request, "Invalid or forged sign-in state.")
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        token_resp = await client.post(
+            GOOGLE_TOKEN,
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            data={
+                "code": code,
+                "client_id": _google_auth_client_id(),
+                "client_secret": _google_auth_client_secret(),
+                "redirect_uri": _google_auth_redirect(),
+                "grant_type": "authorization_code",
+            },
+        )
+        if token_resp.status_code >= 400:
+            return _google_auth_fail(
+                request,
+                f"Google token exchange failed ({token_resp.status_code}).  "
+                "If this keeps happening, the redirect URI in Google Cloud Console "
+                "may not match GOOGLE_AUTH_REDIRECT.",
+            )
+        access_token = (token_resp.json() or {}).get("access_token")
+        if not access_token:
+            return _google_auth_fail(request, "Google returned no access_token.")
+
+        info_resp = await client.get(
+            GOOGLE_USERINFO,
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        if info_resp.status_code >= 400:
+            return _google_auth_fail(request, "Couldn't read your Google profile.")
+        info = info_resp.json() or {}
+
+    sub = (info.get("sub") or "").strip()
+    email = (info.get("email") or "").strip().lower()
+    name = (info.get("name") or "").strip()
+    email_verified = bool(info.get("email_verified"))
+    if not sub or not email:
+        return _google_auth_fail(request, "Google didn't return an email — can't sign you in.")
+    if not email_verified:
+        return _google_auth_fail(request, "Google reports this email as unverified.")
+
+    # 1) Match by google_sub first (stable even if the user changes email).
+    user = db.query(User).filter(User.google_sub == sub).first()
+    is_new = False
+    if not user:
+        # 2) Fall back to email — links Google to an existing password account.
+        user = db.query(User).filter(User.email == email).first()
+        if user:
+            user.google_sub = sub
+            if not user.is_verified:
+                user.is_verified = True
+            db.commit()
+    if not user:
+        # 3) New account — provision with a random unguessable password.
+        # The user can use "Forgot password" later if they want password auth.
+        username = _unique_username_from_email(db, email)
+        user = User(
+            username=username,
+            email=email,
+            hashed_password=hash_password(_py_secrets.token_urlsafe(32)),
+            role="client",
+            tier="trial",
+            is_active=True,
+            is_verified=True,           # Google has verified the email
+            nickname=name or username,
+            google_sub=sub,
+        )
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+        is_new = True
+        log_action(db, user, "SIGNUP", "User", str(user.id),
+                   detail="Sign in with Google — new account")
+        # Best-effort welcome email; never block sign-in.
+        try:
+            from services.onboarding import send_welcome_email
+            send_welcome_email(user)
+        except Exception:
+            pass
+    else:
+        log_action(db, user, "LOGIN", "User", str(user.id),
+                   detail="Sign in with Google")
+
+    if not user.is_active:
+        return _google_auth_fail(request, "This account is disabled.")
+
+    token = create_access_token(user.id)
+    response = RedirectResponse(url="/dashboard", status_code=303)
+    response.set_cookie(
+        key=COOKIE_NAME, value=token, httponly=True, samesite="lax",
+        max_age=TOKEN_TTL_MINUTES * 60,
+    )
+    set_flash(
+        response,
+        "success",
+        f"Welcome to Gootier, {user.nickname or user.username}!" if is_new
+        else f"Welcome back, {user.nickname or user.username}!",
+    )
+    return response
+
+
+def _google_auth_fail(request: Request, message: str):
+    """Helper: render the login page with a flash error.  Used everywhere
+    in the callback that we want to bail out cleanly without 5xx-ing."""
+    from fastapi.templating import Jinja2Templates
+    from services.csrf import get_or_create_token
+    _t = Jinja2Templates(directory="templates")
+    return _t.TemplateResponse(
+        request, "login.html",
+        {"error": message, "csrf_token": get_or_create_token(request)},
+        status_code=400,
+    )
+
+
+def _unique_username_from_email(db, email: str) -> str:
+    """Derives a username from the local part of the email, appending a
+    numeric suffix on collision (e.g. jaymev, jaymev2, jaymev3, …).
+
+    Matches the existing username constraints: 3-20 chars, letters / digits /
+    underscore / hyphen.  Anything outside that set is dropped.
+    """
+    import re as _re
+    base = _re.sub(r"[^a-zA-Z0-9_-]", "", (email.split("@", 1)[0] or "").lower())[:18]
+    if len(base) < 3:
+        base = (base + "user")[:18]
+    candidate = base
+    suffix = 2
+    while db.query(User).filter(User.username == candidate).first():
+        tail = str(suffix)
+        candidate = (base[: 20 - len(tail)] + tail)
+        suffix += 1
+        if suffix > 999:  # defence-in-depth, never expected to hit
+            candidate = base[:16] + secrets.token_urlsafe(3).lower()
+            break
+    return candidate

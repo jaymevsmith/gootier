@@ -10,6 +10,12 @@
 
   {% if error %}<div class="alert alert-danger py-2">{{ error }}</div>{% endif %}
 
+  <a href="/oauth/google/start" class="btn-google w-100" role="button">
+    {% include "_google_g.html" %}
+    <span>Continue with Google</span>
+  </a>
+  <div class="auth-divider"><span>or</span></div>
+
   <form method="post" action="/login">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <div class="mb-3">

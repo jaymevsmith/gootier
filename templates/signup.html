@@ -10,6 +10,17 @@
 
   {% if error %}<div class="alert alert-danger py-2">{{ error }}</div>{% endif %}
 
+  <a href="/oauth/google/start" class="btn-google w-100" role="button">
+    {% include "_google_g.html" %}
+    <span>Sign up with Google</span>
+  </a>
+  <p class="small text-muted text-center mt-2 mb-0">
+    By continuing with Google, you agree to our
+    <a href="/terms" target="_blank" rel="noopener">Terms</a> and
+    <a href="/privacy" target="_blank" rel="noopener">Privacy Policy</a>.
+  </p>
+  <div class="auth-divider"><span>or fill out the form</span></div>
+
   <form method="post" action="/signup">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <div class="mb-3">

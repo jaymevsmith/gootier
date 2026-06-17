@@ -668,6 +668,68 @@ a:hover { color: var(--g-primary-2); text-decoration: underline; }
 .auth-form .form-control { padding: .65rem .85rem; font-size: 1rem; }
 .auth-form .btn { padding: .65rem 1rem; font-weight: 600; }
 
+/* "Continue with Google" — official Google branding rules: white background,
+   1px medium-gray border, Roboto-ish weight on the label, G logo on the
+   left.  Dark variant flips bg + text but keeps the four-colour G untouched
+   (the G's contrast on dark works because each colour has ≥ 3:1 vs #fff). */
+.btn-google {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: .65rem;
+  padding: .6rem 1rem;
+  border-radius: 8px;
+  border: 1px solid #dadce0;
+  background: #fff;
+  color: #1f1f1f;
+  font-weight: 600;
+  font-size: .95rem;
+  text-decoration: none;
+  transition: background-color 120ms ease, box-shadow 120ms ease;
+}
+.btn-google:hover {
+  background: #f8f9fa;
+  box-shadow: 0 1px 2px rgba(60,64,67,.3), 0 1px 3px 1px rgba(60,64,67,.15);
+  color: #1f1f1f;
+}
+.btn-google:focus-visible {
+  outline: 2px solid #4285f4;
+  outline-offset: 2px;
+}
+.btn-google-g { flex-shrink: 0; }
+
+/* Aurora dark variant — official Google guidelines do allow a dark button
+   (background #131314, border #8e918f, text #e3e3e3) as long as the G stays
+   four-colour.  Applies whenever a parent has data-theme="aurora". */
+[data-theme="aurora"] .btn-google {
+  background: #131314;
+  border-color: #8e918f;
+  color: #e3e3e3;
+}
+[data-theme="aurora"] .btn-google:hover {
+  background: #1f1f20;
+  color: #fff;
+}
+
+/* "or" divider between Google button and password form. */
+.auth-divider {
+  display: flex;
+  align-items: center;
+  gap: .75rem;
+  margin: 1.25rem 0;
+  color: var(--g-text-3);
+  font-size: .8rem;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+}
+.auth-divider::before,
+.auth-divider::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--g-border-soft);
+}
+
 @media (max-width: 800px) {
   .auth-shell { grid-template-columns: 1fr; }
   .auth-hero { padding: 2.25rem 1.5rem; min-height: auto; }
