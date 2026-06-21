@@ -108,8 +108,8 @@ async def create_checkout_session(
             client_reference_id=str(user.id),
             metadata={"user_id": str(user.id), "tier": tier},
             subscription_data={"metadata": {"user_id": str(user.id), "tier": tier}},
-            success_url=f"{APP_URL}/billing?upgraded=1",
-            cancel_url=f"{APP_URL}/billing?cancelled=1",
+            success_url=f"{_app_url()}/billing?upgraded=1",
+            cancel_url=f"{_app_url()}/billing?cancelled=1",
         )
     except stripe.error.StripeError as e:
         raise HTTPException(status_code=502, detail=str(e))
