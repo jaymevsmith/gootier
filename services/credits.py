@@ -19,20 +19,56 @@ from fastapi import HTTPException
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from models import CreditLedger, User, log_action
+from models import CreditLedger, TierConfig, TopupPackConfig, User, log_action
 
-MONTHLY_GRANT_BY_TIER = {
+# Final-fallback grant amounts if a tier row is missing or has no
+# monthly_credit_grant set.  Should only kick in for legacy installs
+# pre-dating the DB-backed tier display fields; the seeder populates
+# real values into tier_configs on first boot.
+_FALLBACK_GRANT_BY_TIER = {
     "trial":  0,
     "bronze": 2_000,
     "silver": 10_000,
     "gold":   50_000,
 }
 
-TOPUP_PACKS = [
-    {"key": "pack_500",   "credits": 500,   "price_cents": 500,   "label": "Starter — 500 credits"},
-    {"key": "pack_2000",  "credits": 2_000, "price_cents": 1500,  "label": "Standard — 2,000 credits"},
-    {"key": "pack_10000", "credits": 10_000,"price_cents": 6000,  "label": "Pro — 10,000 credits"},
-]
+
+def monthly_grant_for_tier(db: Session, tier: str) -> int:
+    """Look up the configured monthly credit grant for a tier from the DB.
+    Falls back to the hardcoded default if the row is missing / unconfigured."""
+    row = db.query(TierConfig).filter(TierConfig.tier == tier).first()
+    if row and row.monthly_credit_grant:
+        return int(row.monthly_credit_grant)
+    return _FALLBACK_GRANT_BY_TIER.get(tier, 0)
+
+
+def list_topup_packs(db: Session) -> list[dict]:
+    """All active credit packs, sorted by sort_order then label.
+    Shape matches the legacy hardcoded list so call sites don't have to change."""
+    rows = (
+        db.query(TopupPackConfig)
+        .filter(TopupPackConfig.is_active == True)  # noqa: E712
+        .order_by(TopupPackConfig.sort_order.asc(), TopupPackConfig.label.asc())
+        .all()
+    )
+    return [{
+        "key": r.key,
+        "label": r.label,
+        "credits": r.credits,
+        "price_cents": r.price_cents,
+    } for r in rows]
+
+
+def get_topup_pack(db: Session, pack_key: str) -> Optional[dict]:
+    """Single pack by key — used by the checkout endpoint."""
+    r = (
+        db.query(TopupPackConfig)
+        .filter(TopupPackConfig.key == pack_key, TopupPackConfig.is_active == True)  # noqa: E712
+        .first()
+    )
+    if not r:
+        return None
+    return {"key": r.key, "label": r.label, "credits": r.credits, "price_cents": r.price_cents}
 
 
 def _current_month_tag() -> str:
@@ -54,7 +90,7 @@ def _ensure_monthly_grant(db: Session, user: User) -> None:
 
     # Staff bypass: give them gold-tier grant so they can fully test.
     tier_key = user.tier if not user.is_staff() else "gold"
-    amount = MONTHLY_GRANT_BY_TIER.get(tier_key, 0)
+    amount = monthly_grant_for_tier(db, tier_key)
     if amount <= 0:
         return
 

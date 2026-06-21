@@ -82,6 +82,19 @@ class TierConfig(Base):
     perms_json = Column(Text, default="{}", nullable=False)
     quotas_json = Column(Text, default="{}", nullable=False)
 
+    # Billing-page display fields (Admin → Plans).  Adding columns here
+    # instead of a new table keeps tier metadata in one row per tier and
+    # lets the existing permissions/quotas editor + the new plans editor
+    # share a join-free read path.
+    display_name = Column(String, nullable=True)            # "Bronze"
+    blurb = Column(String, nullable=True)                   # "For solo brands getting started."
+    monthly_price_cents = Column(Integer, nullable=True)    # 900 for $9.00 (display only — Stripe is source of truth)
+    stripe_price_id = Column(String, nullable=True)         # "price_..."
+    features_json = Column(Text, default="[]", nullable=False)  # JSON array of bullet strings
+    monthly_credit_grant = Column(Integer, default=0, nullable=False)
+    sort_order = Column(Integer, default=0, nullable=False)
+    is_active = Column(Boolean, default=True, nullable=False)
+
     def perms_dict(self) -> dict:
         try:
             return json.loads(self.perms_json or "{}")
@@ -93,6 +106,32 @@ class TierConfig(Base):
             return json.loads(self.quotas_json or "{}")
         except json.JSONDecodeError:
             return {}
+
+    def features_list(self) -> list:
+        try:
+            data = json.loads(self.features_json or "[]")
+            return data if isinstance(data, list) else []
+        except json.JSONDecodeError:
+            return []
+
+
+class TopupPackConfig(Base):
+    """One row per credit pack offered on the billing page.
+
+    Prices are denormalized cents (USD) — they get passed straight into
+    Stripe's inline `price_data` so there's no Stripe Price object to
+    keep in sync.  Admin edits go live the next time /billing is loaded;
+    no app restart needed.
+    """
+    __tablename__ = "topup_pack_configs"
+
+    id = Column(Integer, primary_key=True)
+    key = Column(String, unique=True, nullable=False)   # "pack_500"
+    label = Column(String, nullable=False)              # "Starter — 500 credits"
+    credits = Column(Integer, nullable=False)           # 500
+    price_cents = Column(Integer, nullable=False)       # 500 → $5.00
+    sort_order = Column(Integer, default=0, nullable=False)
+    is_active = Column(Boolean, default=True, nullable=False)
 
 
 class RoleConfig(Base):
@@ -412,6 +451,18 @@ def _upgrade_social_connections(conn):
     _safe_add_column(conn, "social_connections", "refresh_token", "TEXT")
 
 
+def _upgrade_tier_configs(conn):
+    """Add display fields to tier_configs without dropping perms/quotas data."""
+    _safe_add_column(conn, "tier_configs", "display_name",         "VARCHAR")
+    _safe_add_column(conn, "tier_configs", "blurb",                "VARCHAR")
+    _safe_add_column(conn, "tier_configs", "monthly_price_cents",  "INTEGER")
+    _safe_add_column(conn, "tier_configs", "stripe_price_id",      "VARCHAR")
+    _safe_add_column(conn, "tier_configs", "features_json",        "TEXT")
+    _safe_add_column(conn, "tier_configs", "monthly_credit_grant", "INTEGER")
+    _safe_add_column(conn, "tier_configs", "sort_order",           "INTEGER")
+    _safe_add_column(conn, "tier_configs", "is_active",            "BOOLEAN")
+
+
 def _upgrade_media(conn):
     _safe_add_column(conn, "social_posts", "video_url",            "VARCHAR")
     _safe_add_column(conn, "social_posts", "image_job_id",         "INTEGER")
@@ -422,10 +473,37 @@ def _upgrade_media(conn):
     _safe_add_column(conn, "social_posts", "analytics_fetched_at", "TIMESTAMP")
 
 
+_DEFAULT_TIER_DISPLAY = {
+    # tier_key: (display_name, blurb, monthly_price_cents, monthly_credit_grant, sort_order, features)
+    "trial":  ("Trial", "Free 14-day trial.", 0, 100, 0,
+               ["1 social account", "10 posts", "1 email blast", "5 AI generations", "Community support"]),
+    "bronze": ("Bronze", "For solo brands getting started.", 900, 500, 10,
+               ["3 social accounts", "60 posts/month", "4 email blasts/month",
+                "30 AI generations/month", "Email support"]),
+    "silver": ("Silver", "For growing teams shipping weekly.", 2900, 2000, 20,
+               ["6 social accounts", "200 posts/month", "12 email blasts/month",
+                "100 AI generations/month", "Priority support"]),
+    "gold":   ("Gold", "For agencies running many brands.", 9900, 50000, 30,
+               ["20 social accounts", "1000 posts/month", "50 email blasts/month",
+                "1000 AI generations/month", "Dedicated support"]),
+}
+
+
 def _seed_tier_configs(db) -> None:
+    """Idempotent seed for the four built-in tiers.  Populates permissions,
+    quotas, and the billing-page display fields without clobbering admin edits.
+
+    Reseed rules:
+      - perms / quotas: merge into existing row, force-overwriting only the
+        keys in _FORCE_OVERWRITE_KEYS (so admins can tweak everything else)
+      - display fields: filled in *only* when blank, so once an admin edits
+        the display copy on /admin/plans we never overwrite their changes
+    """
     from sqlalchemy.exc import IntegrityError
     for tier, perms in _DEFAULT_TIER_PERMS.items():
         quotas = _DEFAULT_TIER_QUOTAS[tier]
+        display = _DEFAULT_TIER_DISPLAY.get(tier, (tier.title(), "", 0, 0, 0, []))
+        d_name, d_blurb, d_price, d_grant, d_sort, d_features = display
         try:
             existing = db.query(TierConfig).filter(TierConfig.tier == tier).first()
             if existing is None:
@@ -433,6 +511,13 @@ def _seed_tier_configs(db) -> None:
                     tier=tier,
                     perms_json=json.dumps(perms),
                     quotas_json=json.dumps(quotas),
+                    display_name=d_name,
+                    blurb=d_blurb,
+                    monthly_price_cents=d_price,
+                    monthly_credit_grant=d_grant,
+                    features_json=json.dumps(d_features),
+                    sort_order=d_sort,
+                    is_active=True,
                 ))
             else:
                 current = existing.perms_dict()
@@ -444,6 +529,48 @@ def _seed_tier_configs(db) -> None:
                 existing.perms_json = json.dumps(current)
                 if not existing.quotas_json or existing.quotas_json == "{}":
                     existing.quotas_json = json.dumps(quotas)
+                # Only fill display fields when blank so admin edits stick.
+                if not existing.display_name:
+                    existing.display_name = d_name
+                if not existing.blurb:
+                    existing.blurb = d_blurb
+                if existing.monthly_price_cents is None:
+                    existing.monthly_price_cents = d_price
+                if not existing.monthly_credit_grant:
+                    existing.monthly_credit_grant = d_grant
+                if not existing.features_json or existing.features_json == "[]":
+                    existing.features_json = json.dumps(d_features)
+                if not existing.sort_order:
+                    existing.sort_order = d_sort
+                if existing.is_active is None:
+                    existing.is_active = True
+            db.commit()
+        except IntegrityError:
+            db.rollback()
+            continue
+
+
+_DEFAULT_TOPUP_PACKS = [
+    # (key, label, credits, price_cents, sort_order)
+    ("pack_500",   "Starter — 500 credits",     500,   500,  10),
+    ("pack_2000",  "Standard — 2,000 credits",  2000,  1500, 20),
+    ("pack_10000", "Pro — 10,000 credits",      10000, 6000, 30),
+]
+
+
+def _seed_topup_packs(db) -> None:
+    """Insert the default credit packs on first boot.  Never overwrites
+    existing rows so admins can rename/reprice/disable packs from
+    /admin/plans without their edits getting reverted on the next deploy."""
+    from sqlalchemy.exc import IntegrityError
+    for key, label, credits, price_cents, sort_order in _DEFAULT_TOPUP_PACKS:
+        try:
+            if db.query(TopupPackConfig).filter(TopupPackConfig.key == key).first():
+                continue
+            db.add(TopupPackConfig(
+                key=key, label=label, credits=credits,
+                price_cents=price_cents, sort_order=sort_order, is_active=True,
+            ))
             db.commit()
         except IntegrityError:
             db.rollback()
@@ -539,6 +666,7 @@ def init_db() -> None:
         _upgrade_users(conn)
         _upgrade_social_connections(conn)
         _upgrade_media(conn)
+        _upgrade_tier_configs(conn)
     print("[init_db] migrations done", flush=True)
     from database import SessionLocal
     db = SessionLocal()
@@ -546,6 +674,7 @@ def init_db() -> None:
         _seed_tier_configs(db)
         _seed_role_configs(db)
         _seed_env_configs(db)
+        _seed_topup_packs(db)
         _encrypt_existing_tokens(db)
     finally:
         db.close()

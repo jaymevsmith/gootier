@@ -9,10 +9,10 @@ from sqlalchemy.orm import Session
 
 from auth import get_current_user
 from database import get_db
-from models import CreditLedger, User, log_action
+from models import CreditLedger, TierConfig, User, log_action
 from services.credits import (
-    TOPUP_PACKS, balance as credits_balance, grant as credits_grant,
-    recent_history as credits_history,
+    balance as credits_balance, get_topup_pack, grant as credits_grant,
+    list_topup_packs, recent_history as credits_history,
 )
 from services.env_config import get_env
 
@@ -32,31 +32,60 @@ def _ensure_stripe_key() -> str:
     stripe.api_key = key
     return key
 
-TIERS = [
-    {"key": "bronze", "name": "Bronze", "blurb": "For solo brands getting started.",
-     "features": ["3 social accounts", "60 posts/month", "4 email blasts/month",
-                  "30 AI generations/month", "Email support"],
-     "price_id_env": "STRIPE_PRICE_BRONZE"},
-    {"key": "silver", "name": "Silver", "blurb": "For growing teams shipping weekly.",
-     "features": ["6 social accounts", "200 posts/month", "12 email blasts/month",
-                  "100 AI generations/month", "Priority support"],
-     "price_id_env": "STRIPE_PRICE_SILVER"},
-    {"key": "gold", "name": "Gold", "blurb": "For agencies running many brands.",
-     "features": ["20 social accounts", "1000 posts/month", "50 email blasts/month",
-                  "1000 AI generations/month", "Dedicated support"],
-     "price_id_env": "STRIPE_PRICE_GOLD"},
-]
+# Tier keys we render on the billing page (in this order).  "trial" is
+# excluded because trial isn't a Stripe-purchasable plan — it's the default
+# state for new accounts.
+_BILLING_TIER_KEYS = ("bronze", "silver", "gold")
 
 
-def _price_to_tier_map() -> dict:
-    return {get_env(t["price_id_env"], ""): t["key"] for t in TIERS if get_env(t["price_id_env"])}
+def _stripe_price_id_for_tier(db: Session, tier_key: str) -> Optional[str]:
+    """Look up a tier's Stripe Price ID.
+
+    Reads `tier_configs.stripe_price_id` first (admin-editable on /admin/plans),
+    then falls back to the legacy `STRIPE_PRICE_BRONZE/SILVER/GOLD` env keys
+    so older installs keep working without an admin trip.
+    """
+    row = db.query(TierConfig).filter(TierConfig.tier == tier_key).first()
+    if row and row.stripe_price_id:
+        return row.stripe_price_id
+    legacy = get_env(f"STRIPE_PRICE_{tier_key.upper()}", "")
+    return legacy or None
 
 
-def _tier_to_price(tier: str) -> Optional[str]:
-    for t in TIERS:
-        if t["key"] == tier:
-            return get_env(t["price_id_env"]) or None
-    return None
+def _load_billing_tiers(db: Session) -> list[dict]:
+    """All tier rows the billing page should render, in their configured sort
+    order, normalized to the dict shape billing.html expects."""
+    rows = (
+        db.query(TierConfig)
+        .filter(TierConfig.tier.in_(_BILLING_TIER_KEYS), TierConfig.is_active == True)  # noqa: E712
+        .order_by(TierConfig.sort_order.asc())
+        .all()
+    )
+    out = []
+    for r in rows:
+        legacy_env = f"STRIPE_PRICE_{r.tier.upper()}"
+        price_id = r.stripe_price_id or get_env(legacy_env, "") or None
+        out.append({
+            "key": r.tier,
+            "name": r.display_name or r.tier.title(),
+            "blurb": r.blurb or "",
+            "monthly_price_cents": r.monthly_price_cents or 0,
+            "features": r.features_list(),
+            "price_id": price_id,
+            "price_id_env": legacy_env,   # kept so the disabled-button tooltip can still hint
+            "configured": bool(price_id),
+        })
+    return out
+
+
+def _price_id_to_tier_key(db: Session) -> dict:
+    """Reverse lookup for the Stripe webhook: price_id → tier_key."""
+    out: dict = {}
+    for r in db.query(TierConfig).filter(TierConfig.tier.in_(_BILLING_TIER_KEYS)).all():
+        pid = r.stripe_price_id or get_env(f"STRIPE_PRICE_{r.tier.upper()}", "")
+        if pid:
+            out[pid] = r.tier
+    return out
 
 
 # ------------------------------ Pages ------------------------------ #
@@ -67,13 +96,9 @@ async def billing_page(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    tiers_view = []
-    for t in TIERS:
-        tiers_view.append({
-            **t,
-            "configured": bool(get_env(t["price_id_env"])),
-            "current": user.tier == t["key"],
-        })
+    tiers_view = _load_billing_tiers(db)
+    for t in tiers_view:
+        t["current"] = (user.tier == t["key"])
     return templates.TemplateResponse(request, "billing.html", {
         "user": user,
         "tiers": tiers_view,
@@ -81,7 +106,7 @@ async def billing_page(
         "has_subscription": bool(user.stripe_customer_id),
         "credit_balance": credits_balance(db, user),
         "credit_history": credits_history(db, user, limit=20),
-        "topup_packs": TOPUP_PACKS,
+        "topup_packs": list_topup_packs(db),
     })
 
 
@@ -91,11 +116,12 @@ async def billing_page(
 async def create_checkout_session(
     request: Request,
     user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ):
     _ensure_stripe_key()
     body = await request.json()
     tier = body.get("tier")
-    price_id = _tier_to_price(tier)
+    price_id = _stripe_price_id_for_tier(db, tier) if tier in _BILLING_TIER_KEYS else None
     if not price_id:
         raise HTTPException(status_code=400, detail=f"Unknown or unconfigured tier: {tier}")
 
@@ -121,12 +147,13 @@ async def create_checkout_session(
 async def create_credits_checkout(
     request: Request,
     user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ):
     """One-off Stripe Checkout for a credit pack (mode='payment', no recurring)."""
     _ensure_stripe_key()
     body = await request.json()
     pack_key = body.get("pack_key")
-    pack = next((p for p in TOPUP_PACKS if p["key"] == pack_key), None)
+    pack = get_topup_pack(db, pack_key)
     if not pack:
         raise HTTPException(status_code=400, detail=f"Unknown credit pack: {pack_key!r}")
 
@@ -284,7 +311,7 @@ def _handle_checkout_completed(db: Session, session_obj: dict) -> None:
 
     if customer_id:
         user.stripe_customer_id = customer_id
-    if tier and tier in {t["key"] for t in TIERS}:
+    if tier and tier in _BILLING_TIER_KEYS:
         user.tier = tier
     if sub_id:
         try:
@@ -304,7 +331,7 @@ def _handle_subscription_updated(db: Session, sub_obj: dict) -> None:
     items = (sub_obj.get("items") or {}).get("data") or []
     if items:
         price_id = (items[0].get("price") or {}).get("id")
-        mapped = _price_to_tier_map().get(price_id)
+        mapped = _price_id_to_tier_key(db).get(price_id)
         if mapped:
             user.tier = mapped
     period_end = sub_obj.get("current_period_end")

@@ -113,9 +113,11 @@
     <div class="tier-name">{{ t.name }}</div>
     <div class="tier-blurb">{{ t.blurb }}</div>
     <div class="tier-price">
-      {% if t.key == 'bronze' %}$9<small>/month</small>
-      {% elif t.key == 'silver' %}$29<small>/month</small>
-      {% elif t.key == 'gold' %}$99<small>/month</small>{% endif %}
+      {% if t.monthly_price_cents %}
+        ${{ '%g'|format(t.monthly_price_cents / 100) }}<small>/month</small>
+      {% else %}
+        <span class="text-muted small">price not set</span>
+      {% endif %}
     </div>
     <ul class="features">
       {% for f in t.features %}

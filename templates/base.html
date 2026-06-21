@@ -171,8 +171,14 @@
     <a href="/admin/users" class="g-more-tile {{ 'active' if p.startswith('/admin/users') }}">
       <i class="fas fa-users" aria-hidden="true"></i><span>Users</span>
     </a>
+    <a href="/admin/plans" class="g-more-tile {{ 'active' if p.startswith('/admin/plans') }}">
+      <i class="fas fa-tags" aria-hidden="true"></i><span>Plans</span>
+    </a>
     <a href="/admin/env" class="g-more-tile {{ 'active' if p.startswith('/admin/env') }}">
       <i class="fas fa-key" aria-hidden="true"></i><span>Env</span>
+    </a>
+    <a href="/admin/logs" class="g-more-tile {{ 'active' if p.startswith('/admin/logs') }}">
+      <i class="fas fa-clock-rotate-left" aria-hidden="true"></i><span>Activity</span>
     </a>
   </div>
   {% endif %}

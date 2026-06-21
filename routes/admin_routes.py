@@ -10,7 +10,10 @@ from sqlalchemy.orm import Session
 
 from auth import get_current_user, get_current_user_optional
 from database import get_db
-from models import ActionLog, EmailBlast, EnvConfig, SocialConnection, SocialPost, User, log_action
+from models import (
+    ActionLog, EmailBlast, EnvConfig, SocialConnection, SocialPost,
+    TierConfig, TopupPackConfig, User, log_action,
+)
 from services.env_config import list_for_admin, set_env
 
 router = APIRouter()
@@ -80,6 +83,20 @@ async def admin_env_page(
     if not user.has_role("admin"):
         raise HTTPException(status_code=403, detail="Admin access required")
     return templates.TemplateResponse(request, "admin_env.html", _ctx(user))
+
+
+@router.get("/admin/plans")
+async def admin_plans_page(
+    request: Request,
+    user: User = Depends(get_current_user_optional),
+):
+    """Admin editor for the billing page: subscription tiers + credit packs.
+    Everything visible to end users on /billing is editable here."""
+    if not user:
+        return RedirectResponse(url="/login", status_code=303)
+    if not user.has_role("admin"):
+        raise HTTPException(status_code=403, detail="Admin access required")
+    return templates.TemplateResponse(request, "admin_plans.html", _ctx(user))
 
 
 @router.get("/admin/logs")
@@ -311,3 +328,189 @@ async def list_logs(
 
 def _split(csv: str) -> List[str]:
     return [s.strip() for s in (csv or "").split(",") if s.strip()]
+
+
+# --------------------------------------------------------------------------- #
+# Plans & credit packs API — backs /admin/plans
+# --------------------------------------------------------------------------- #
+
+class TierUpdate(BaseModel):
+    """All fields optional; we only patch the ones the admin sent."""
+    display_name: Optional[str] = None
+    blurb: Optional[str] = None
+    monthly_price_cents: Optional[int] = None
+    stripe_price_id: Optional[str] = None
+    monthly_credit_grant: Optional[int] = None
+    sort_order: Optional[int] = None
+    is_active: Optional[bool] = None
+    features: Optional[List[str]] = None
+
+
+class TopupPackUpsert(BaseModel):
+    """Create payload — `key` is required.  Update payload — `key` is the URL param."""
+    label: str
+    credits: int
+    price_cents: int
+    sort_order: Optional[int] = 0
+    is_active: Optional[bool] = True
+
+
+class TopupPackCreate(TopupPackUpsert):
+    key: str
+
+
+_PLANS_VALID_TIERS = ("trial", "bronze", "silver", "gold")
+
+
+def _serialize_tier(t: TierConfig) -> dict:
+    return {
+        "tier": t.tier,
+        "display_name": t.display_name or t.tier.title(),
+        "blurb": t.blurb or "",
+        "monthly_price_cents": t.monthly_price_cents or 0,
+        "monthly_price_display": f"${(t.monthly_price_cents or 0) / 100:.2f}",
+        "stripe_price_id": t.stripe_price_id or "",
+        "monthly_credit_grant": int(t.monthly_credit_grant or 0),
+        "features": t.features_list(),
+        "sort_order": int(t.sort_order or 0),
+        "is_active": bool(t.is_active if t.is_active is not None else True),
+    }
+
+
+def _serialize_pack(p: TopupPackConfig) -> dict:
+    return {
+        "key": p.key,
+        "label": p.label,
+        "credits": p.credits,
+        "price_cents": p.price_cents,
+        "price_display": f"${p.price_cents / 100:.2f}",
+        "sort_order": p.sort_order or 0,
+        "is_active": bool(p.is_active),
+    }
+
+
+@router.get("/api/admin/tiers")
+async def list_tiers(
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    _admin: User = Depends(require_admin),
+):
+    rows = db.query(TierConfig).order_by(TierConfig.sort_order.asc(), TierConfig.tier.asc()).all()
+    return {"tiers": [_serialize_tier(r) for r in rows]}
+
+
+@router.patch("/api/admin/tiers/{tier_key}")
+async def update_tier(
+    tier_key: str,
+    payload: TierUpdate,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    import json as _json
+    if tier_key not in _PLANS_VALID_TIERS:
+        raise HTTPException(status_code=404, detail=f"Unknown tier: {tier_key}")
+    row = db.query(TierConfig).filter(TierConfig.tier == tier_key).first()
+    if not row:
+        raise HTTPException(status_code=404, detail=f"Tier row missing for {tier_key} — re-run init_db")
+
+    changed: list = []
+    if payload.display_name is not None and payload.display_name.strip():
+        row.display_name = payload.display_name.strip()[:80]
+        changed.append("display_name")
+    if payload.blurb is not None:
+        row.blurb = payload.blurb.strip()[:280]
+        changed.append("blurb")
+    if payload.monthly_price_cents is not None:
+        row.monthly_price_cents = max(0, int(payload.monthly_price_cents))
+        changed.append("monthly_price_cents")
+    if payload.stripe_price_id is not None:
+        row.stripe_price_id = payload.stripe_price_id.strip()[:120] or None
+        changed.append("stripe_price_id")
+    if payload.monthly_credit_grant is not None:
+        row.monthly_credit_grant = max(0, int(payload.monthly_credit_grant))
+        changed.append("monthly_credit_grant")
+    if payload.sort_order is not None:
+        row.sort_order = int(payload.sort_order)
+        changed.append("sort_order")
+    if payload.is_active is not None:
+        row.is_active = bool(payload.is_active)
+        changed.append("is_active")
+    if payload.features is not None:
+        # Cap at 12 bullets, 120 chars each — sane defaults to prevent abuse.
+        clean = [str(f).strip()[:120] for f in payload.features if str(f).strip()][:12]
+        row.features_json = _json.dumps(clean)
+        changed.append("features")
+
+    db.commit()
+    log_action(db, admin, "UPDATE", "TierConfig", tier_key, detail=f"changed: {','.join(changed) or 'none'}")
+    return _serialize_tier(row)
+
+
+@router.get("/api/admin/topup-packs")
+async def list_packs(
+    db: Session = Depends(get_db),
+    _admin: User = Depends(require_admin),
+):
+    rows = db.query(TopupPackConfig).order_by(TopupPackConfig.sort_order.asc(), TopupPackConfig.label.asc()).all()
+    return {"packs": [_serialize_pack(r) for r in rows]}
+
+
+@router.post("/api/admin/topup-packs")
+async def create_pack(
+    payload: TopupPackCreate,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    key = (payload.key or "").strip()
+    if not key or not key.replace("_", "").isalnum():
+        raise HTTPException(status_code=400, detail="key must be alphanumeric / underscore only")
+    if db.query(TopupPackConfig).filter(TopupPackConfig.key == key).first():
+        raise HTTPException(status_code=409, detail=f"Pack '{key}' already exists")
+    row = TopupPackConfig(
+        key=key,
+        label=payload.label.strip()[:120],
+        credits=max(1, int(payload.credits)),
+        price_cents=max(0, int(payload.price_cents)),
+        sort_order=int(payload.sort_order or 0),
+        is_active=bool(payload.is_active),
+    )
+    db.add(row); db.commit(); db.refresh(row)
+    log_action(db, admin, "CREATE", "TopupPackConfig", key, detail=f"{row.credits} credits @ ${row.price_cents/100:.2f}")
+    return _serialize_pack(row)
+
+
+@router.patch("/api/admin/topup-packs/{pack_key}")
+async def update_pack(
+    pack_key: str,
+    payload: TopupPackUpsert,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    row = db.query(TopupPackConfig).filter(TopupPackConfig.key == pack_key).first()
+    if not row:
+        raise HTTPException(status_code=404, detail=f"Pack not found: {pack_key}")
+    row.label = payload.label.strip()[:120]
+    row.credits = max(1, int(payload.credits))
+    row.price_cents = max(0, int(payload.price_cents))
+    if payload.sort_order is not None:
+        row.sort_order = int(payload.sort_order)
+    if payload.is_active is not None:
+        row.is_active = bool(payload.is_active)
+    db.commit()
+    log_action(db, admin, "UPDATE", "TopupPackConfig", pack_key,
+               detail=f"{row.credits} credits @ ${row.price_cents/100:.2f}")
+    return _serialize_pack(row)
+
+
+@router.delete("/api/admin/topup-packs/{pack_key}")
+async def delete_pack(
+    pack_key: str,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    row = db.query(TopupPackConfig).filter(TopupPackConfig.key == pack_key).first()
+    if not row:
+        raise HTTPException(status_code=404, detail=f"Pack not found: {pack_key}")
+    db.delete(row); db.commit()
+    log_action(db, admin, "DELETE", "TopupPackConfig", pack_key)
+    return {"deleted": pack_key}
