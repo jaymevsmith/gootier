@@ -368,30 +368,160 @@ a:hover { color: var(--g-primary-2); text-decoration: underline; }
 .legal-prose a:hover { color: var(--g-primary-2); }
 .legal-prose strong { color: var(--g-text-strong, var(--g-text-1)); }
 
-/* Responsive */
-@media (max-width: 900px) {
-  .app-sidebar {
-    position: fixed;
-    transform: translateX(-100%);
-    transition: transform .2s ease;
-    z-index: 1080;
-  }
-  .app-sidebar.open { transform: translateX(0); }
-  .mobile-bar {
-    display: flex; align-items: center; gap: .75rem;
-    padding: .75rem 1rem;
-    background: var(--g-sidebar);
-    color: #fff;
-    position: sticky; top: 0; z-index: 1070;
-  }
-  .mobile-bar .brand-mini {
-    font-weight: 700;
-    background: var(--g-grad);
-    -webkit-background-clip: text; background-clip: text; color: transparent;
-  }
+/* Responsive — nav rules lift to 1024px (iPad-retina) per the cross-project
+   mobile-nav rule.  Other mobile tweaks (font shrinks, table padding, etc.)
+   stay at 720px below. */
+@media (max-width: 1024px) {
+  /* Hide the desktop sidebar entirely — the bottom-tab nav replaces it. */
+  .app-sidebar { display: none !important; }
+  /* Reclaim the sidebar's space + clear room for the fixed bottom nav. */
+  .app-shell { grid-template-columns: 1fr !important; }
+  .app-main { padding-bottom: calc(60px + env(safe-area-inset-bottom, 0px) + 12px); }
   .page-header, .page-content { padding-left: 1rem; padding-right: 1rem; }
 }
-.mobile-bar { display: none; }
+
+/* ── Mobile bottom-tab nav ──────────────────────────────────────
+   Visual tokens mirror Trading Jay's .tj-mobile-tab pattern exactly
+   (see cross-project mobile-nav rule).  Hidden above 1024px. */
+#g-mobile-nav {
+  display: none !important;
+  position: fixed; bottom: 0; left: 0; right: 0;
+  z-index: 1060; height: 60px;
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+  background: #0a0c14; border-top: 1px solid #1e2535;
+  align-items: stretch;
+  /* GPU composite layer — prevents iOS Safari viewport-resize jump on scroll. */
+  transform: translateZ(0);
+  -webkit-transform: translateZ(0);
+  will-change: transform;
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+}
+@media (max-width: 1024px) {
+  #g-mobile-nav { display: flex !important; }
+}
+.g-mobile-tab {
+  flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 3px; color: #718096 !important; text-decoration: none !important;
+  font-size: .58rem; font-weight: 700; text-transform: uppercase; letter-spacing: .05em;
+  transition: color .15s; padding: 6px 2px; border: none; background: none; cursor: pointer;
+}
+.g-mobile-tab i { font-size: 1.15rem; line-height: 1; }
+.g-mobile-tab:hover { color: #a78bfa !important; text-decoration: none !important; }
+.g-mobile-tab.active { color: #667eea !important; }
+
+/* ── More drawer ────────────────────────────────────────────── */
+#g-more-overlay {
+  position: fixed; inset: 0;
+  background: rgba(0, 0, 0, .55); z-index: 1070;
+  backdrop-filter: blur(2px);
+  opacity: 0; pointer-events: none;
+  transition: opacity .25s;
+}
+#g-more-overlay.active { opacity: 1; pointer-events: auto; }
+
+#g-more-drawer {
+  display: none;
+  position: fixed; left: 0; right: 0;
+  bottom: calc(60px + env(safe-area-inset-bottom, 0px));
+  z-index: 1080;
+  background: #0d0f18; border: 1px solid #1e2535; border-bottom: none;
+  border-radius: 18px 18px 0 0;
+  padding: 8px 0 14px;
+  transform: translateY(110%);
+  transition: transform .28s cubic-bezier(.4, 0, .2, 1);
+  max-height: 72vh; overflow-y: auto;
+  pointer-events: none;
+}
+#g-more-drawer.open { transform: translateY(0); pointer-events: auto; }
+@media (max-width: 1024px) { #g-more-drawer { display: block; } }
+
+.g-more-handle {
+  width: 40px; height: 4px; border-radius: 2px;
+  background: #2d3748; margin: 4px auto 12px;
+}
+
+.g-more-group-label {
+  font-size: .62rem; font-weight: 800; letter-spacing: .08em; text-transform: uppercase;
+  color: #5a6678; padding: 14px 18px 6px;
+}
+.g-more-group-label:first-of-type { padding-top: 4px; }
+
+.g-more-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  padding: 0 14px;
+}
+
+.g-more-tile {
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  gap: 8px; padding: 18px 8px;
+  background: #141720; border: 1px solid #1e2535; border-radius: 12px;
+  color: #a0aec0 !important; text-decoration: none !important;
+  font-size: .75rem; font-weight: 700;
+  text-transform: uppercase; letter-spacing: .05em;
+  text-align: center; width: 100%;
+  transition: background .15s, color .15s, border-color .15s;
+  cursor: pointer;
+}
+.g-more-tile i { font-size: 1.4rem; color: #a78bfa; line-height: 1; }
+.g-more-tile:hover {
+  background: #1a1e2e; color: #e2e8f0 !important;
+  border-color: #3a4060; text-decoration: none !important;
+}
+.g-more-tile.active {
+  background: rgba(102, 126, 234, .12);
+  border-color: rgba(102, 126, 234, .35);
+  color: #667eea !important;
+}
+.g-more-tile.active i { color: #667eea; }
+
+/* Logout — full-width danger row */
+.g-more-tile-danger {
+  flex-direction: row; gap: 10px;
+  padding: 14px 20px; justify-content: center;
+  background: rgba(252, 129, 129, .06); border-color: rgba(252, 129, 129, .2);
+  color: #fc8181 !important;
+  text-transform: none; font-size: .88rem; letter-spacing: 0;
+}
+.g-more-tile-danger i { font-size: 1rem; color: #fc8181; }
+.g-more-tile-danger:hover {
+  background: rgba(252, 129, 129, .12); border-color: rgba(252, 129, 129, .35);
+  color: #fca5a5 !important;
+}
+
+/* Light-mode overrides — Gootier defaults to light, so dark Aurora is
+   the override.  TJ's CSS does this the other way around. */
+body[data-theme="light"] #g-mobile-nav {
+  background: #ffffff; border-top: 1px solid #e5e7eb;
+}
+body[data-theme="light"] .g-mobile-tab { color: #6b7280 !important; }
+body[data-theme="light"] .g-mobile-tab:hover { color: #4f46e5 !important; }
+body[data-theme="light"] .g-mobile-tab.active { color: #667eea !important; }
+body[data-theme="light"] #g-more-drawer {
+  background: #f9fafb; border-color: #e5e7eb;
+}
+body[data-theme="light"] .g-more-handle { background: #d1d5db; }
+body[data-theme="light"] .g-more-group-label { color: #9ca3af; }
+body[data-theme="light"] .g-more-tile {
+  background: #fff; border-color: #e5e7eb; color: #6b7280 !important;
+}
+body[data-theme="light"] .g-more-tile i { color: #667eea; }
+body[data-theme="light"] .g-more-tile:hover {
+  background: #f3f4f6; color: #111827 !important; border-color: #d1d5db;
+}
+body[data-theme="light"] .g-more-tile.active {
+  background: rgba(102, 126, 234, .08);
+  border-color: rgba(102, 126, 234, .3);
+  color: #667eea !important;
+}
+body[data-theme="light"] .g-more-tile-danger {
+  background: rgba(220, 38, 38, .05); border-color: rgba(220, 38, 38, .2);
+  color: #dc2626 !important;
+}
+body[data-theme="light"] .g-more-tile-danger i { color: #dc2626; }
 
 /* ============================================================
    Cards
