@@ -64,6 +64,30 @@
 .plans-save-status { font-size: .75rem; margin-left: .5rem; opacity: .7; }
 .plans-save-status.saved { color: var(--g-success, #10b981); opacity: 1; }
 .plans-save-status.error { color: var(--g-danger, #ef4444); opacity: 1; }
+
+.quotas-section {
+  margin-top: .85rem;
+  padding: .85rem 1rem;
+  background: rgba(102, 126, 234, .05);
+  border: 1px solid rgba(102, 126, 234, .18);
+  border-radius: 10px;
+}
+.quotas-head {
+  display: flex; align-items: baseline; justify-content: space-between;
+  gap: .5rem; margin-bottom: .5rem; flex-wrap: wrap;
+}
+.quotas-head strong { color: var(--g-text-strong, var(--g-text-1)); font-size: .85rem; }
+.quotas-warn {
+  color: #b45309;
+  background: rgba(245, 158, 11, .08);
+  border: 1px solid rgba(245, 158, 11, .25);
+  padding: .35rem .55rem; border-radius: 6px;
+}
+[data-theme="aurora"] .quotas-warn {
+  color: #fbbf24;
+  background: rgba(245, 158, 11, .12);
+  border-color: rgba(245, 158, 11, .35);
+}
 </style>
 
 <script>
@@ -89,13 +113,27 @@ async function loadTiers() {
   data.tiers.forEach(t => wireTierCard(t.tier));
 }
 
+function quotaInput(t, key, label) {
+  const v = (t.quotas && t.quotas[key] !== null && t.quotas[key] !== undefined) ? t.quotas[key] : '';
+  return `
+    <div class="col-md-3">
+      <label>${label}</label>
+      <input type="number" min="0" step="1" class="form-control"
+             data-quota="${key}" value="${v}" placeholder="∞ unlimited">
+    </div>`;
+}
+
 function tierCardHTML(t) {
   const features = (t.features || []).join('\n');
+  const userBadge = t.user_count > 0
+    ? `<span class="hl hl-info" title="Active users on this tier">${t.user_count} user${t.user_count === 1 ? '' : 's'}</span>`
+    : '';
   return `
     <div class="card-x plans-card" data-tier="${t.tier}">
       <div class="plans-card-head">
         <h6>${esc(t.display_name)} <span class="text-muted small">&middot; ${t.tier}</span></h6>
         <span class="hl ${t.is_active ? 'hl-success' : 'hl-muted'}">${t.is_active ? 'Active' : 'Hidden'}</span>
+        ${userBadge}
         <div class="plans-card-actions">
           <span class="plans-save-status" data-save-status></span>
           <button class="btn btn-soft btn-sm" data-tier-save>Save</button>
@@ -140,8 +178,29 @@ function tierCardHTML(t) {
           </div>
         </div>
         <div class="col-12 features-editor">
-          <label>Features (one bullet per line, max 12)</label>
+          <label>Features (one bullet per line, max 12) — display only</label>
           <textarea class="form-control" data-field="features">${esc(features)}</textarea>
+        </div>
+
+        <div class="col-12">
+          <div class="quotas-section">
+            <div class="quotas-head">
+              <strong><i class="fas fa-shield-halved me-1"></i>Enforced limits</strong>
+              <span class="text-muted small">These are what the app actually blocks. Leave blank = unlimited.</span>
+            </div>
+            <div class="row g-2">
+              ${quotaInput(t, 'social_connections',       'Social accounts')}
+              ${quotaInput(t, 'posts_per_month',          'Posts / month')}
+              ${quotaInput(t, 'blasts_per_month',         'Email blasts / month')}
+              ${quotaInput(t, 'ai_generations_per_month', 'AI generations / month')}
+            </div>
+            ${t.user_count > 0 ? `
+              <div class="quotas-warn small mt-2">
+                <i class="fas fa-triangle-exclamation"></i>
+                Lowering a limit immediately affects ${t.user_count} active user${t.user_count === 1 ? '' : 's'} on this tier.
+              </div>
+            ` : ''}
+          </div>
         </div>
       </div>
     </div>`;
@@ -153,6 +212,12 @@ function wireTierCard(tierKey) {
   const status = card.querySelector('[data-save-status]');
   card.querySelector('[data-tier-save]').addEventListener('click', async () => {
     const get = (f) => card.querySelector(`[data-field="${f}"]`);
+    const getQ = (k) => {
+      const el = card.querySelector(`[data-quota="${k}"]`);
+      // Empty input → null (= unlimited).  Anything else → integer.
+      const raw = (el?.value ?? '').trim();
+      return raw === '' ? null : Math.max(0, parseInt(raw, 10) || 0);
+    };
     const dollars = parseFloat(get('monthly_price_dollars').value || '0');
     const payload = {
       display_name: get('display_name').value,
@@ -163,6 +228,12 @@ function wireTierCard(tierKey) {
       sort_order: parseInt(get('sort_order').value || '0', 10),
       is_active: get('is_active').checked,
       features: get('features').value.split('\n').map(s => s.trim()).filter(Boolean),
+      quotas: {
+        social_connections:       getQ('social_connections'),
+        posts_per_month:          getQ('posts_per_month'),
+        blasts_per_month:         getQ('blasts_per_month'),
+        ai_generations_per_month: getQ('ai_generations_per_month'),
+      },
     };
     status.textContent = 'Saving…'; status.className = 'plans-save-status';
     const updated = await TJ.api.patch(`/api/admin/tiers/${tierKey}`, payload, { successMsg: 'Tier saved' });

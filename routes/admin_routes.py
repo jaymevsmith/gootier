@@ -334,6 +334,14 @@ def _split(csv: str) -> List[str]:
 # Plans & credit packs API — backs /admin/plans
 # --------------------------------------------------------------------------- #
 
+class TierQuotas(BaseModel):
+    """The four enforced limits in services/quotas.py.  Null = unlimited."""
+    social_connections: Optional[int] = None
+    posts_per_month: Optional[int] = None
+    blasts_per_month: Optional[int] = None
+    ai_generations_per_month: Optional[int] = None
+
+
 class TierUpdate(BaseModel):
     """All fields optional; we only patch the ones the admin sent."""
     display_name: Optional[str] = None
@@ -344,6 +352,7 @@ class TierUpdate(BaseModel):
     sort_order: Optional[int] = None
     is_active: Optional[bool] = None
     features: Optional[List[str]] = None
+    quotas: Optional[TierQuotas] = None
 
 
 class TopupPackUpsert(BaseModel):
@@ -362,7 +371,14 @@ class TopupPackCreate(TopupPackUpsert):
 _PLANS_VALID_TIERS = ("trial", "bronze", "silver", "gold")
 
 
-def _serialize_tier(t: TierConfig) -> dict:
+_QUOTA_KEYS = (
+    "social_connections", "posts_per_month",
+    "blasts_per_month", "ai_generations_per_month",
+)
+
+
+def _serialize_tier(t: TierConfig, *, user_count: int = 0) -> dict:
+    quotas = t.quotas_dict() or {}
     return {
         "tier": t.tier,
         "display_name": t.display_name or t.tier.title(),
@@ -374,6 +390,12 @@ def _serialize_tier(t: TierConfig) -> dict:
         "features": t.features_list(),
         "sort_order": int(t.sort_order or 0),
         "is_active": bool(t.is_active if t.is_active is not None else True),
+        # Enforced limits — only render the four keys the quota engine knows
+        # about so the UI stays in sync with services/quotas.py.
+        "quotas": {k: quotas.get(k) for k in _QUOTA_KEYS},
+        # Number of users currently on this tier — admin needs to see who
+        # they're about to affect before lowering a quota.
+        "user_count": user_count,
     }
 
 
@@ -396,7 +418,16 @@ async def list_tiers(
     _admin: User = Depends(require_admin),
 ):
     rows = db.query(TierConfig).order_by(TierConfig.sort_order.asc(), TierConfig.tier.asc()).all()
-    return {"tiers": [_serialize_tier(r) for r in rows]}
+    # One aggregate query — count active users grouped by tier — so the UI
+    # can tell the admin how many real accounts each quota change affects.
+    counts_q = (
+        db.query(User.tier, func.count(User.id))
+        .filter(User.is_active == True)  # noqa: E712
+        .group_by(User.tier)
+        .all()
+    )
+    counts = {tier: int(n) for tier, n in counts_q}
+    return {"tiers": [_serialize_tier(r, user_count=counts.get(r.tier, 0)) for r in rows]}
 
 
 @router.patch("/api/admin/tiers/{tier_key}")
@@ -441,9 +472,30 @@ async def update_tier(
         row.features_json = _json.dumps(clean)
         changed.append("features")
 
+    # Enforced quotas — written to quotas_json so services/quotas.py picks
+    # them up on the next request.  null on any key = unlimited for that key.
+    if payload.quotas is not None:
+        existing_q = row.quotas_dict() or {}
+        for k in _QUOTA_KEYS:
+            new_val = getattr(payload.quotas, k)
+            if new_val is None:
+                # Treat -1 / None / blank as "unlimited" — remove the key
+                # from quotas_json so services/quotas.py.get_quota returns None.
+                existing_q.pop(k, None)
+            else:
+                existing_q[k] = max(0, int(new_val))
+        row.quotas_json = _json.dumps(existing_q)
+        changed.append("quotas")
+
     db.commit()
     log_action(db, admin, "UPDATE", "TierConfig", tier_key, detail=f"changed: {','.join(changed) or 'none'}")
-    return _serialize_tier(row)
+    # Fresh user-count so the UI stays accurate after save (cheap single query).
+    user_count = (
+        db.query(User)
+        .filter(User.tier == tier_key, User.is_active == True)  # noqa: E712
+        .count()
+    )
+    return _serialize_tier(row, user_count=user_count)
 
 
 @router.get("/api/admin/topup-packs")
