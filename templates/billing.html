@@ -107,9 +107,9 @@
 {% endif %}
 
 <div class="period-toggle" role="group" aria-label="Billing period" style="display:flex;justify-content:center;gap:.25rem;margin:0 auto 1.5rem;width:max-content;background:#f1f3f9;border-radius:999px;padding:.25rem;">
-  <button type="button" class="period-opt is-active" data-period="monthly"
+  <button type="button" class="period-opt is-active" data-period="monthly" aria-pressed="true"
           style="border:0;background:transparent;border-radius:999px;padding:.4rem 1.1rem;font-weight:600;font-size:.9rem;cursor:pointer;color:#4a5568;">Monthly</button>
-  <button type="button" class="period-opt" data-period="yearly"
+  <button type="button" class="period-opt" data-period="yearly" aria-pressed="false"
           style="border:0;background:transparent;border-radius:999px;padding:.4rem 1.1rem;font-weight:600;font-size:.9rem;cursor:pointer;color:#4a5568;">
     Yearly <span class="hl hl-success" style="margin-left:.35rem;">2 months free</span>
   </button>
@@ -127,7 +127,7 @@
     {% if t.current %}<span class="hl hl-indigo current-badge">Current</span>{% endif %}
     <div class="tier-name">{{ t.name }}</div>
     <div class="tier-blurb">{{ t.blurb }}</div>
-    <div class="tier-price">
+    <div class="tier-price" aria-live="polite">
       <span class="price-monthly">
         {% if t.monthly_price_cents %}
           ${{ '%g'|format(t.monthly_price_cents / 100) }}<small>/month</small>
@@ -153,6 +153,7 @@
             data-upgrade="{{ t.key }}"
             data-monthly-configured="{{ 1 if t.configured else 0 }}"
             data-yearly-configured="{{ 1 if t.yearly_configured else 0 }}"
+            data-monthly-title="{% if not t.configured %}Set {{ t.price_id_env }} to enable{% endif %}"
             data-current="{{ 1 if t.current else 0 }}"
             {% if t.current or not t.configured or not stripe_configured %}disabled{% endif %}
             {% if not t.configured %}title="Set {{ t.price_id_env }} to enable"{% endif %}>
@@ -175,8 +176,11 @@ let billingPeriod = 'monthly';
 
 function applyPeriodUI() {
   document.body.classList.toggle('billing-yearly', billingPeriod === 'yearly');
-  document.querySelectorAll('.period-opt').forEach(b =>
-    b.classList.toggle('is-active', b.dataset.period === billingPeriod));
+  document.querySelectorAll('.period-opt').forEach(b => {
+    const active = b.dataset.period === billingPeriod;
+    b.classList.toggle('is-active', active);
+    b.setAttribute('aria-pressed', String(active));
+  });
   // Re-evaluate each upgrade button's enabled state for the active period.
   document.querySelectorAll('[data-upgrade]').forEach(btn => {
     if (btn.dataset.current === '1' || !{{ 'true' if stripe_configured else 'false' }}) {
@@ -187,7 +191,13 @@ function applyPeriodUI() {
       ? btn.dataset.yearlyConfigured === '1'
       : btn.dataset.monthlyConfigured === '1';
     btn.disabled = !ok;
-    btn.title = ok ? '' : (billingPeriod === 'yearly' ? 'Yearly not configured' : 'Monthly not configured');
+    if (ok) {
+      btn.title = '';
+    } else if (billingPeriod === 'yearly') {
+      btn.title = 'Yearly not configured';
+    } else {
+      btn.title = btn.dataset.monthlyTitle || 'Monthly not configured';
+    }
   });
 }
 
