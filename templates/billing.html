@@ -106,6 +106,21 @@
   </div>
 {% endif %}
 
+<div class="period-toggle" role="group" aria-label="Billing period" style="display:flex;justify-content:center;gap:.25rem;margin:0 auto 1.5rem;width:max-content;background:#f1f3f9;border-radius:999px;padding:.25rem;">
+  <button type="button" class="period-opt is-active" data-period="monthly"
+          style="border:0;background:transparent;border-radius:999px;padding:.4rem 1.1rem;font-weight:600;font-size:.9rem;cursor:pointer;color:#4a5568;">Monthly</button>
+  <button type="button" class="period-opt" data-period="yearly"
+          style="border:0;background:transparent;border-radius:999px;padding:.4rem 1.1rem;font-weight:600;font-size:.9rem;cursor:pointer;color:#4a5568;">
+    Yearly <span class="hl hl-success" style="margin-left:.35rem;">2 months free</span>
+  </button>
+</div>
+<style>
+  .period-toggle .period-opt.is-active { background:#fff; color:#4f46e5; box-shadow:0 1px 3px rgba(0,0,0,.12); }
+  .tier-card .price-yearly { display:none; }
+  .billing-yearly .tier-card .price-monthly { display:none; }
+  .billing-yearly .tier-card .price-yearly { display:block; }
+</style>
+
 <div class="tier-grid">
   {% for t in tiers %}
   <div class="tier-card {% if t.key == 'silver' %}featured{% endif %}">
@@ -113,11 +128,21 @@
     <div class="tier-name">{{ t.name }}</div>
     <div class="tier-blurb">{{ t.blurb }}</div>
     <div class="tier-price">
-      {% if t.monthly_price_cents %}
-        ${{ '%g'|format(t.monthly_price_cents / 100) }}<small>/month</small>
-      {% else %}
-        <span class="text-muted small">price not set</span>
-      {% endif %}
+      <span class="price-monthly">
+        {% if t.monthly_price_cents %}
+          ${{ '%g'|format(t.monthly_price_cents / 100) }}<small>/month</small>
+        {% else %}
+          <span class="text-muted small">price not set</span>
+        {% endif %}
+      </span>
+      <span class="price-yearly">
+        {% if t.yearly_configured %}
+          ${{ '%g'|format(t.yearly_price_cents / 100) }}<small>/year</small>
+          <div class="hl hl-success small">2 months free</div>
+        {% else %}
+          <span class="text-muted small">yearly not configured</span>
+        {% endif %}
+      </span>
     </div>
     <ul class="features">
       {% for f in t.features %}
@@ -126,6 +151,9 @@
     </ul>
     <button class="btn {% if t.key == 'silver' %}tj-grad-btn{% else %}btn-soft{% endif %} mt-auto"
             data-upgrade="{{ t.key }}"
+            data-monthly-configured="{{ 1 if t.configured else 0 }}"
+            data-yearly-configured="{{ 1 if t.yearly_configured else 0 }}"
+            data-current="{{ 1 if t.current else 0 }}"
             {% if t.current or not t.configured or not stripe_configured %}disabled{% endif %}
             {% if not t.configured %}title="Set {{ t.price_id_env }} to enable"{% endif %}>
       {% if t.current %}Current plan
@@ -143,11 +171,36 @@
 
 {% block scripts %}
 <script>
+let billingPeriod = 'monthly';
+
+function applyPeriodUI() {
+  document.body.classList.toggle('billing-yearly', billingPeriod === 'yearly');
+  document.querySelectorAll('.period-opt').forEach(b =>
+    b.classList.toggle('is-active', b.dataset.period === billingPeriod));
+  // Re-evaluate each upgrade button's enabled state for the active period.
+  document.querySelectorAll('[data-upgrade]').forEach(btn => {
+    if (btn.dataset.current === '1' || !{{ 'true' if stripe_configured else 'false' }}) {
+      btn.disabled = true;
+      return;
+    }
+    const ok = billingPeriod === 'yearly'
+      ? btn.dataset.yearlyConfigured === '1'
+      : btn.dataset.monthlyConfigured === '1';
+    btn.disabled = !ok;
+    btn.title = ok ? '' : (billingPeriod === 'yearly' ? 'Yearly not configured' : 'Monthly not configured');
+  });
+}
+
+document.querySelectorAll('.period-opt').forEach(opt => {
+  opt.addEventListener('click', () => { billingPeriod = opt.dataset.period; applyPeriodUI(); });
+});
+applyPeriodUI();
+
 document.querySelectorAll('[data-upgrade]').forEach(btn => {
   btn.addEventListener('click', async () => {
     const tier = btn.dataset.upgrade;
     const restore = TJ.btnLoading(btn, 'Redirecting…');
-    const data = await TJ.api.post('/api/billing/checkout', { tier },
+    const data = await TJ.api.post('/api/billing/checkout', { tier, period: billingPeriod },
       { progress: true, progressLabel: 'Creating checkout…' });
     restore();
     if (data && data.url) window.location.href = data.url;
