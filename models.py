@@ -90,6 +90,7 @@ class TierConfig(Base):
     blurb = Column(String, nullable=True)                   # "For solo brands getting started."
     monthly_price_cents = Column(Integer, nullable=True)    # 900 for $9.00 (display only — Stripe is source of truth)
     stripe_price_id = Column(String, nullable=True)         # "price_..."
+    yearly_stripe_price_id = Column(String, nullable=True)  # "price_..." (yearly interval; display = monthly_price_cents * 10)
     features_json = Column(Text, default="[]", nullable=False)  # JSON array of bullet strings
     monthly_credit_grant = Column(Integer, default=0, nullable=False)
     sort_order = Column(Integer, default=0, nullable=False)
@@ -457,6 +458,7 @@ def _upgrade_tier_configs(conn):
     _safe_add_column(conn, "tier_configs", "blurb",                "VARCHAR")
     _safe_add_column(conn, "tier_configs", "monthly_price_cents",  "INTEGER")
     _safe_add_column(conn, "tier_configs", "stripe_price_id",      "VARCHAR")
+    _safe_add_column(conn, "tier_configs", "yearly_stripe_price_id", "VARCHAR")
     _safe_add_column(conn, "tier_configs", "features_json",        "TEXT")
     _safe_add_column(conn, "tier_configs", "monthly_credit_grant", "INTEGER")
     _safe_add_column(conn, "tier_configs", "sort_order",           "INTEGER")
