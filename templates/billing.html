@@ -154,6 +154,7 @@
             data-monthly-configured="{{ 1 if t.configured else 0 }}"
             data-yearly-configured="{{ 1 if t.yearly_configured else 0 }}"
             data-monthly-title="{% if not t.configured %}Set {{ t.price_id_env }} to enable{% endif %}"
+            data-tier-name="{{ t.name }}"
             data-current="{{ 1 if t.current else 0 }}"
             {% if t.current or not t.configured or not stripe_configured %}disabled{% endif %}
             {% if not t.configured %}title="Set {{ t.price_id_env }} to enable"{% endif %}>
@@ -193,10 +194,12 @@ function applyPeriodUI() {
     btn.disabled = !ok;
     if (ok) {
       btn.title = '';
-    } else if (billingPeriod === 'yearly') {
-      btn.title = 'Yearly not configured';
+      btn.textContent = 'Upgrade to ' + btn.dataset.tierName;
     } else {
-      btn.title = btn.dataset.monthlyTitle || 'Monthly not configured';
+      btn.title = billingPeriod === 'yearly'
+        ? 'Yearly not configured'
+        : (btn.dataset.monthlyTitle || 'Monthly not configured');
+      btn.textContent = 'Not configured';
     }
   });
 }
