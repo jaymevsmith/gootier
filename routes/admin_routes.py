@@ -348,6 +348,7 @@ class TierUpdate(BaseModel):
     blurb: Optional[str] = None
     monthly_price_cents: Optional[int] = None
     stripe_price_id: Optional[str] = None
+    yearly_stripe_price_id: Optional[str] = None
     monthly_credit_grant: Optional[int] = None
     sort_order: Optional[int] = None
     is_active: Optional[bool] = None
@@ -386,6 +387,8 @@ def _serialize_tier(t: TierConfig, *, user_count: int = 0) -> dict:
         "monthly_price_cents": t.monthly_price_cents or 0,
         "monthly_price_display": f"${(t.monthly_price_cents or 0) / 100:.2f}",
         "stripe_price_id": t.stripe_price_id or "",
+        "yearly_stripe_price_id": t.yearly_stripe_price_id or "",
+        "yearly_price_display": f"${((t.monthly_price_cents or 0) * 10) / 100:.2f}",
         "monthly_credit_grant": int(t.monthly_credit_grant or 0),
         "features": t.features_list(),
         "sort_order": int(t.sort_order or 0),
@@ -457,6 +460,9 @@ async def update_tier(
     if payload.stripe_price_id is not None:
         row.stripe_price_id = payload.stripe_price_id.strip()[:120] or None
         changed.append("stripe_price_id")
+    if payload.yearly_stripe_price_id is not None:
+        row.yearly_stripe_price_id = payload.yearly_stripe_price_id.strip()[:120] or None
+        changed.append("yearly_stripe_price_id")
     if payload.monthly_credit_grant is not None:
         row.monthly_credit_grant = max(0, int(payload.monthly_credit_grant))
         changed.append("monthly_credit_grant")

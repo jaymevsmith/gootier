@@ -162,9 +162,15 @@ function tierCardHTML(t) {
                  value="${t.monthly_credit_grant}">
         </div>
         <div class="col-md-4">
-          <label>Stripe Price ID</label>
+          <label>Stripe Price ID (monthly)</label>
           <input type="text" class="form-control" data-field="stripe_price_id" value="${esc(t.stripe_price_id)}"
                  placeholder="price_1Q...">
+        </div>
+        <div class="col-md-4">
+          <label>Stripe Price ID (yearly)</label>
+          <input type="text" class="form-control" data-field="yearly_stripe_price_id" value="${esc(t.yearly_stripe_price_id)}"
+                 placeholder="price_1Q...">
+          <div class="form-text small text-muted">Displays as ${t.yearly_price_display}/year (10× monthly)</div>
         </div>
         <div class="col-md-1">
           <label>Order</label>
@@ -224,6 +230,7 @@ function wireTierCard(tierKey) {
       blurb: get('blurb').value,
       monthly_price_cents: Math.round(dollars * 100),
       stripe_price_id: get('stripe_price_id').value,
+      yearly_stripe_price_id: get('yearly_stripe_price_id').value,
       monthly_credit_grant: parseInt(get('monthly_credit_grant').value || '0', 10),
       sort_order: parseInt(get('sort_order').value || '0', 10),
       is_active: get('is_active').checked,

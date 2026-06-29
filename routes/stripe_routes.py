@@ -38,14 +38,17 @@ def _ensure_stripe_key() -> str:
 _BILLING_TIER_KEYS = ("bronze", "silver", "gold")
 
 
-def _stripe_price_id_for_tier(db: Session, tier_key: str) -> Optional[str]:
-    """Look up a tier's Stripe Price ID.
+def _stripe_price_id_for_tier(db: Session, tier_key: str, period: str = "monthly") -> Optional[str]:
+    """Look up a tier's Stripe Price ID for the given billing period.
 
-    Reads `tier_configs.stripe_price_id` first (admin-editable on /admin/plans),
-    then falls back to the legacy `STRIPE_PRICE_BRONZE/SILVER/GOLD` env keys
-    so older installs keep working without an admin trip.
+    Monthly reads `tier_configs.stripe_price_id` first (admin-editable on
+    /admin/plans), then falls back to the legacy `STRIPE_PRICE_BRONZE/SILVER/GOLD`
+    env keys so older installs keep working.  Yearly reads
+    `tier_configs.yearly_stripe_price_id` only — no env fallback, the feature is new.
     """
     row = db.query(TierConfig).filter(TierConfig.tier == tier_key).first()
+    if period == "yearly":
+        return (row.yearly_stripe_price_id or None) if row else None
     if row and row.stripe_price_id:
         return row.stripe_price_id
     legacy = get_env(f"STRIPE_PRICE_{tier_key.upper()}", "")
@@ -65,26 +68,36 @@ def _load_billing_tiers(db: Session) -> list[dict]:
     for r in rows:
         legacy_env = f"STRIPE_PRICE_{r.tier.upper()}"
         price_id = r.stripe_price_id or get_env(legacy_env, "") or None
+        monthly_cents = r.monthly_price_cents or 0
         out.append({
             "key": r.tier,
             "name": r.display_name or r.tier.title(),
             "blurb": r.blurb or "",
-            "monthly_price_cents": r.monthly_price_cents or 0,
+            "monthly_price_cents": monthly_cents,
+            "yearly_price_cents": monthly_cents * 10,
             "features": r.features_list(),
             "price_id": price_id,
             "price_id_env": legacy_env,   # kept so the disabled-button tooltip can still hint
             "configured": bool(price_id),
+            "yearly_price_id": r.yearly_stripe_price_id or None,
+            "yearly_configured": bool(r.yearly_stripe_price_id),
         })
     return out
 
 
 def _price_id_to_tier_key(db: Session) -> dict:
-    """Reverse lookup for the Stripe webhook: price_id → tier_key."""
+    """Reverse lookup for the Stripe webhook: price_id -> tier_key.
+
+    Includes both the monthly and yearly price IDs so a yearly subscription
+    resolves to the same tier as its monthly counterpart.
+    """
     out: dict = {}
     for r in db.query(TierConfig).filter(TierConfig.tier.in_(_BILLING_TIER_KEYS)).all():
-        pid = r.stripe_price_id or get_env(f"STRIPE_PRICE_{r.tier.upper()}", "")
-        if pid:
-            out[pid] = r.tier
+        monthly_pid = r.stripe_price_id or get_env(f"STRIPE_PRICE_{r.tier.upper()}", "")
+        if monthly_pid:
+            out[monthly_pid] = r.tier
+        if r.yearly_stripe_price_id:
+            out[r.yearly_stripe_price_id] = r.tier
     return out
 
 
@@ -121,9 +134,12 @@ async def create_checkout_session(
     _ensure_stripe_key()
     body = await request.json()
     tier = body.get("tier")
-    price_id = _stripe_price_id_for_tier(db, tier) if tier in _BILLING_TIER_KEYS else None
+    period = body.get("period", "monthly")
+    if period not in ("monthly", "yearly"):
+        raise HTTPException(status_code=400, detail=f"Invalid billing period: {period!r}")
+    price_id = _stripe_price_id_for_tier(db, tier, period) if tier in _BILLING_TIER_KEYS else None
     if not price_id:
-        raise HTTPException(status_code=400, detail=f"Unknown or unconfigured tier: {tier}")
+        raise HTTPException(status_code=400, detail=f"Unknown or unconfigured {period} tier: {tier}")
 
     try:
         session = stripe.checkout.Session.create(
@@ -132,8 +148,8 @@ async def create_checkout_session(
             customer=user.stripe_customer_id or None,
             customer_email=None if user.stripe_customer_id else user.email,
             client_reference_id=str(user.id),
-            metadata={"user_id": str(user.id), "tier": tier},
-            subscription_data={"metadata": {"user_id": str(user.id), "tier": tier}},
+            metadata={"user_id": str(user.id), "tier": tier, "period": period},
+            subscription_data={"metadata": {"user_id": str(user.id), "tier": tier, "period": period}},
             success_url=f"{_app_url()}/billing?upgraded=1",
             cancel_url=f"{_app_url()}/billing?cancelled=1",
         )
