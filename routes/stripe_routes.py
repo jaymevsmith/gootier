@@ -134,9 +134,12 @@ async def create_checkout_session(
     _ensure_stripe_key()
     body = await request.json()
     tier = body.get("tier")
-    price_id = _stripe_price_id_for_tier(db, tier) if tier in _BILLING_TIER_KEYS else None
+    period = body.get("period", "monthly")
+    if period not in ("monthly", "yearly"):
+        raise HTTPException(status_code=400, detail=f"Invalid billing period: {period!r}")
+    price_id = _stripe_price_id_for_tier(db, tier, period) if tier in _BILLING_TIER_KEYS else None
     if not price_id:
-        raise HTTPException(status_code=400, detail=f"Unknown or unconfigured tier: {tier}")
+        raise HTTPException(status_code=400, detail=f"Unknown or unconfigured {period} tier: {tier}")
 
     try:
         session = stripe.checkout.Session.create(
@@ -145,8 +148,8 @@ async def create_checkout_session(
             customer=user.stripe_customer_id or None,
             customer_email=None if user.stripe_customer_id else user.email,
             client_reference_id=str(user.id),
-            metadata={"user_id": str(user.id), "tier": tier},
-            subscription_data={"metadata": {"user_id": str(user.id), "tier": tier}},
+            metadata={"user_id": str(user.id), "tier": tier, "period": period},
+            subscription_data={"metadata": {"user_id": str(user.id), "tier": tier, "period": period}},
             success_url=f"{_app_url()}/billing?upgraded=1",
             cancel_url=f"{_app_url()}/billing?cancelled=1",
         )
