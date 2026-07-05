@@ -12,6 +12,7 @@ from auth import (
 )
 from database import get_db
 from models import User, log_action
+from services.affiliates import affiliates
 from services.csrf import get_or_create_token, verify_csrf
 from services.email_utils import send_email_verification, send_password_reset
 from services.env_config import get_env
@@ -86,9 +87,10 @@ async def login_submit(
 
 
 @router.get("/signup")
-async def signup_page(request: Request):
+async def signup_page(request: Request, ref: str = ""):
     return templates.TemplateResponse(request, "signup.html",
-                                       {"error": None, "csrf_token": get_or_create_token(request)})
+                                       {"error": None, "csrf_token": get_or_create_token(request),
+                                        "ref": ref})
 
 
 @router.post("/signup")
@@ -97,6 +99,7 @@ async def signup_submit(
     username: str = Form(...),
     email: str = Form(...),
     password: str = Form(...),
+    ref: str = Form(default=""),
     db: Session = Depends(get_db),
     _csrf: None = Depends(verify_csrf),
 ):
@@ -104,20 +107,20 @@ async def signup_submit(
         if err:
             return templates.TemplateResponse(
                 request, "signup.html",
-                { "error": err, "csrf_token": get_or_create_token(request)}, status_code=400,
+                { "error": err, "csrf_token": get_or_create_token(request), "ref": ref}, status_code=400,
             )
     if db.query(User).filter(User.username == username).first():
         return templates.TemplateResponse(
             request,
             "signup.html",
-            { "error": "Username already taken.", "csrf_token": get_or_create_token(request)},
+            { "error": "Username already taken.", "csrf_token": get_or_create_token(request), "ref": ref},
             status_code=400,
         )
     if db.query(User).filter(User.email == email).first():
         return templates.TemplateResponse(
             request,
             "signup.html",
-            { "error": "Email already registered.", "csrf_token": get_or_create_token(request)},
+            { "error": "Email already registered.", "csrf_token": get_or_create_token(request), "ref": ref},
             status_code=400,
         )
 
@@ -129,11 +132,18 @@ async def signup_submit(
         tier="trial",
         is_active=True,
         is_verified=False,
+        referral_code=ref.strip() or None,
     )
     db.add(user)
     db.commit()
     db.refresh(user)
     log_action(db, user, "SIGNUP", "User", str(user.id))
+
+    if user.referral_code:
+        try:
+            affiliates.report_signup(user.id, ref_code=user.referral_code)
+        except Exception:
+            pass  # affiliates reporting is best-effort — never block signup
 
     # Fire verification email + welcome email (logs the link if SMTP isn't configured).
     trigger_verification_email(db, user, _app_url(request))

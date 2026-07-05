@@ -52,6 +52,9 @@ class User(Base):
     # user later changes the email on their Google profile.
     google_sub = Column(String, nullable=True, index=True, unique=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    # Jhome Affiliates referral code captured from ?ref= at signup (nullable —
+    # most users won't have one). See routes/auth_routes.py signup_submit.
+    referral_code = Column(String, nullable=True)
 
     permissions: dict = {}
 
@@ -446,6 +449,7 @@ def _upgrade_users(conn):
     _safe_add_column(conn, "users", "verify_token_expires_at",   "TIMESTAMP")
     _safe_add_column(conn, "users", "calendar_token",            "VARCHAR")
     _safe_add_column(conn, "users", "google_sub",                "VARCHAR")
+    _safe_add_column(conn, "users", "referral_code",             "VARCHAR")
 
 
 def _upgrade_social_connections(conn):

@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from auth import get_current_user
 from database import get_db
 from models import CreditLedger, TierConfig, User, log_action
+from services.affiliates import affiliates
 from services.credits import (
     balance as credits_balance, get_topup_pack, grant as credits_grant,
     list_topup_packs, recent_history as credits_history,
@@ -125,6 +126,50 @@ async def billing_page(
 
 # ------------------------------ Checkout ------------------------------ #
 
+def _coupon_id_for_affiliate_code(code_info: dict) -> Optional[str]:
+    """Get-or-create a Stripe Coupon in GOOTIER's own Stripe account matching
+    the Jhome Affiliates hub's validate_code() response, and return its id.
+
+    Coupon id is deterministic (derived from the code + terms) so repeat
+    checkouts reuse the same Stripe Coupon object instead of creating a new
+    one every time. Returns None if the code isn't valid or Stripe rejects it.
+    """
+    if not code_info.get("valid"):
+        return None
+
+    percent_off = code_info.get("percent_off")
+    amount_off_cents = code_info.get("amount_off_cents")
+    duration = code_info.get("duration") or "once"
+    duration_months = code_info.get("duration_months")
+    code = code_info.get("code") or ""
+
+    if not percent_off and not amount_off_cents:
+        return None
+
+    coupon_id = f"ja-{code}-{duration}-{percent_off or 0}-{amount_off_cents or 0}"
+    coupon_id = coupon_id.lower().replace(" ", "_")[:64]
+
+    try:
+        return stripe.Coupon.retrieve(coupon_id).id
+    except stripe.error.InvalidRequestError:
+        pass  # doesn't exist yet — create it below
+
+    params = {"id": coupon_id, "duration": duration}
+    if duration == "repeating":
+        params["duration_in_months"] = duration_months or 1
+    if percent_off:
+        params["percent_off"] = percent_off
+    elif amount_off_cents:
+        params["amount_off"] = amount_off_cents
+        params["currency"] = "usd"
+
+    try:
+        coupon = stripe.Coupon.create(**params)
+        return coupon.id
+    except stripe.error.StripeError:
+        return None
+
+
 @router.post("/api/billing/checkout")
 async def create_checkout_session(
     request: Request,
@@ -135,11 +180,19 @@ async def create_checkout_session(
     body = await request.json()
     tier = body.get("tier")
     period = body.get("period", "monthly")
+    discount_code = (body.get("discount_code") or "").strip()
     if period not in ("monthly", "yearly"):
         raise HTTPException(status_code=400, detail=f"Invalid billing period: {period!r}")
     price_id = _stripe_price_id_for_tier(db, tier, period) if tier in _BILLING_TIER_KEYS else None
     if not price_id:
         raise HTTPException(status_code=400, detail=f"Unknown or unconfigured {period} tier: {tier}")
+
+    discounts = None
+    if discount_code:
+        code_info = affiliates.validate_code(discount_code)
+        coupon_id = _coupon_id_for_affiliate_code(code_info)
+        if coupon_id:
+            discounts = [{"coupon": coupon_id}]
 
     try:
         session = stripe.checkout.Session.create(
@@ -152,9 +205,13 @@ async def create_checkout_session(
             subscription_data={"metadata": {"user_id": str(user.id), "tier": tier, "period": period}},
             success_url=f"{_app_url()}/billing?upgraded=1",
             cancel_url=f"{_app_url()}/billing?cancelled=1",
+            **({"discounts": discounts} if discounts else {}),
         )
     except stripe.error.StripeError as e:
         raise HTTPException(status_code=502, detail=str(e))
+
+    if discounts:
+        affiliates.report_redemption(discount_code)
 
     return {"url": session.url}
 
@@ -258,6 +315,8 @@ async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
         _handle_subscription_updated(db, obj)
     elif etype == "customer.subscription.deleted":
         _handle_subscription_cancelled(db, obj)
+    elif etype == "charge.refunded":
+        _handle_charge_refunded(db, obj)
 
     return JSONResponse({"received": True})
 
@@ -300,6 +359,10 @@ def _handle_topup_completed(db: Session, session_obj: dict) -> None:
     log_action(db, user, "TOPUP", "User", str(user.id),
                detail=f"+{credits} credits via {pack_key}")
 
+    amount_total = session_obj.get("amount_total")
+    if amount_total is not None:
+        affiliates.report_payment(user.id, amount_total, session_id or f"topup-{user.id}")
+
 
 def _resolve_user(db: Session, customer_id: str = "", user_id_str: str = "") -> Optional[User]:
     if user_id_str and user_id_str.isdigit():
@@ -339,6 +402,11 @@ def _handle_checkout_completed(db: Session, session_obj: dict) -> None:
     log_action(db, user, "SUBSCRIBE", "User", str(user.id),
                detail=f"Tier upgraded to {user.tier} via Stripe checkout")
 
+    amount_total = session_obj.get("amount_total")
+    session_id = session_obj.get("id") or ""
+    if amount_total is not None:
+        affiliates.report_payment(user.id, amount_total, session_id or f"sub-{user.id}")
+
 
 def _handle_subscription_updated(db: Session, sub_obj: dict) -> None:
     user = _resolve_user(db, customer_id=sub_obj.get("customer", "") or "")
@@ -365,3 +433,16 @@ def _handle_subscription_cancelled(db: Session, sub_obj: dict) -> None:
     user.subscribed_until = None
     db.commit()
     log_action(db, user, "UPDATE", "User", str(user.id), detail="Subscription cancelled — reverted to trial")
+
+
+def _handle_charge_refunded(db: Session, charge_obj: dict) -> None:
+    """Report the refund to Jhome Affiliates.
+
+    NOTE: Gootier had no pre-existing refund-handling business logic (no
+    tier/credit reversal on refund) before this integration — this handler
+    only adds affiliate-hub reporting and intentionally does not invent new
+    tier-downgrade or credit-clawback behavior Gootier didn't already have.
+    """
+    invoice_id = charge_obj.get("invoice") or charge_obj.get("id") or ""
+    if invoice_id:
+        affiliates.report_refund(invoice_id)

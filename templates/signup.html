@@ -23,6 +23,7 @@
 
   <form method="post" action="/signup">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    {% if ref %}<input type="hidden" name="ref" value="{{ ref }}">{% endif %}
     <div class="mb-3">
       <label class="form-label">Username</label>
       <input class="form-control" name="username" required pattern="[a-zA-Z0-9_-]{3,20}">

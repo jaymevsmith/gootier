@@ -106,6 +106,11 @@
   </div>
 {% endif %}
 
+<div class="mb-3 mx-auto" style="max-width:320px;">
+  <label for="promo-code-input" class="form-label small text-muted mb-1">Have a discount code?</label>
+  <input type="text" id="promo-code-input" class="form-control form-control-sm" placeholder="Discount code (optional)" autocomplete="off">
+</div>
+
 <div class="period-toggle" role="group" aria-label="Billing period" style="display:flex;justify-content:center;gap:.25rem;margin:0 auto 1.5rem;width:max-content;background:#f1f3f9;border-radius:999px;padding:.25rem;">
   <button type="button" class="period-opt is-active" data-period="monthly" aria-pressed="true"
           style="border:0;background:transparent;border-radius:999px;padding:.4rem 1.1rem;font-weight:600;font-size:.9rem;cursor:pointer;color:#4a5568;">Monthly</button>
@@ -212,8 +217,9 @@ applyPeriodUI();
 document.querySelectorAll('[data-upgrade]').forEach(btn => {
   btn.addEventListener('click', async () => {
     const tier = btn.dataset.upgrade;
+    const discount_code = (document.getElementById('promo-code-input')?.value || '').trim() || undefined;
     const restore = TJ.btnLoading(btn, 'Redirecting…');
-    const data = await TJ.api.post('/api/billing/checkout', { tier, period: billingPeriod },
+    const data = await TJ.api.post('/api/billing/checkout', { tier, period: billingPeriod, discount_code },
       { progress: true, progressLabel: 'Creating checkout…' });
     restore();
     if (data && data.url) window.location.href = data.url;
