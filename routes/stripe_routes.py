@@ -1,3 +1,4 @@
+import logging
 from datetime import datetime
 from typing import Optional
 
@@ -16,6 +17,8 @@ from services.credits import (
     list_topup_packs, recent_history as credits_history,
 )
 from services.env_config import get_env
+
+logger = logging.getLogger("gootier.stripe")
 
 router = APIRouter()
 templates = Jinja2Templates(directory="templates")
@@ -144,6 +147,10 @@ def _coupon_id_for_affiliate_code(code_info: dict) -> Optional[str]:
     code = code_info.get("code") or ""
 
     if not percent_off and not amount_off_cents:
+        logger.warning(
+            "affiliates discount code %r validated but has neither percent_off "
+            "nor amount_off_cents — skipping discount", code,
+        )
         return None
 
     coupon_id = f"ja-{code}-{duration}-{percent_off or 0}-{amount_off_cents or 0}"
@@ -166,7 +173,11 @@ def _coupon_id_for_affiliate_code(code_info: dict) -> Optional[str]:
     try:
         coupon = stripe.Coupon.create(**params)
         return coupon.id
-    except stripe.error.StripeError:
+    except stripe.error.StripeError as e:
+        logger.warning(
+            "Stripe coupon create failed for affiliates discount code %r (coupon_id=%s): %s",
+            code, coupon_id, e,
+        )
         return None
 
 

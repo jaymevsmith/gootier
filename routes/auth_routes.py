@@ -1,3 +1,4 @@
+import logging
 import secrets
 from datetime import datetime, timedelta
 
@@ -17,6 +18,8 @@ from services.csrf import get_or_create_token, verify_csrf
 from services.email_utils import send_email_verification, send_password_reset
 from services.env_config import get_env
 from services.flash import set_flash
+
+logger = logging.getLogger("gootier.auth")
 
 router = APIRouter()
 templates = Jinja2Templates(directory="templates")
@@ -142,8 +145,8 @@ async def signup_submit(
     if user.referral_code:
         try:
             affiliates.report_signup(user.id, ref_code=user.referral_code)
-        except Exception:
-            pass  # affiliates reporting is best-effort — never block signup
+        except Exception as e:
+            logger.warning("affiliates report_signup failed for user %s: %s", user.id, e)
 
     # Fire verification email + welcome email (logs the link if SMTP isn't configured).
     trigger_verification_email(db, user, _app_url(request))

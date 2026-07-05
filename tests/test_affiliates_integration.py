@@ -11,6 +11,7 @@ patched with unittest.mock so no real HTTP call is made.
 from unittest.mock import patch
 
 import pytest
+import stripe
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
@@ -20,7 +21,7 @@ from sqlalchemy.pool import StaticPool
 from database import Base, get_db
 import models  # noqa: F401 — ensures all models register on Base.metadata
 from models import User
-from routes import auth_routes
+from routes import auth_routes, stripe_routes
 from services.csrf import CSRFCookieMiddleware
 
 
@@ -111,3 +112,79 @@ def test_signup_without_ref_does_not_report_signup(db, client):
 
     assert resp.status_code in (200, 303)
     mock_report.assert_not_called()
+
+
+# ---------------------------------------------------------------- #
+# Checkout discount / coupon logic (routes/stripe_routes.py)
+# ---------------------------------------------------------------- #
+
+def test_hub_down_discount_code_yields_no_coupon():
+    """When the affiliates hub is down/unreachable, validate_code() fails
+    closed with {"valid": False} (see jhome_affiliates.py). The coupon
+    lookup helper must treat that as "no discount" rather than raising —
+    proving checkout degrades gracefully instead of failing when the hub
+    is unavailable."""
+    with patch.object(stripe_routes.affiliates, "validate_code", return_value={"valid": False}):
+        code_info = stripe_routes.affiliates.validate_code("JAYS10")
+        coupon_id = stripe_routes._coupon_id_for_affiliate_code(code_info)
+
+    assert coupon_id is None
+
+
+def test_coupon_create_race_falls_through_to_none():
+    """If Stripe's Coupon.create() raises because the deterministic coupon
+    id was created concurrently by another request (or any other
+    InvalidRequestError from create), _coupon_id_for_affiliate_code must
+    catch it and return None instead of propagating and breaking checkout."""
+    code_info = {
+        "valid": True,
+        "code": "JAYS10",
+        "percent_off": 10,
+        "duration": "once",
+    }
+
+    with patch.object(
+        stripe.Coupon, "retrieve",
+        side_effect=stripe.error.InvalidRequestError("No such coupon", param="id"),
+    ), patch.object(
+        stripe.Coupon, "create",
+        side_effect=stripe.error.InvalidRequestError("Coupon already exists", param="id"),
+    ):
+        coupon_id = stripe_routes._coupon_id_for_affiliate_code(code_info)
+
+    assert coupon_id is None
+
+
+# ---------------------------------------------------------------- #
+# Refund webhook (routes/stripe_routes.py — _handle_charge_refunded)
+# ---------------------------------------------------------------- #
+
+def test_charge_refunded_webhook_reports_refund_with_invoice_id(db):
+    """A representative charge.refunded payload (with an attached invoice)
+    should be reported to the affiliates hub using the invoice id."""
+    charge_obj = {
+        "id": "ch_test123",
+        "invoice": "in_test456",
+        "amount_refunded": 500,
+    }
+
+    with patch.object(stripe_routes.affiliates, "report_refund") as mock_report:
+        stripe_routes._handle_charge_refunded(db, charge_obj)
+
+    mock_report.assert_called_once_with("in_test456")
+
+
+def test_charge_refunded_webhook_falls_back_to_charge_id_without_invoice(db):
+    """When a charge has no attached invoice (e.g. a one-off payment_intent
+    refund), the handler falls back to the charge id so the refund still
+    gets reported."""
+    charge_obj = {
+        "id": "ch_test789",
+        "invoice": None,
+        "amount_refunded": 1000,
+    }
+
+    with patch.object(stripe_routes.affiliates, "report_refund") as mock_report:
+        stripe_routes._handle_charge_refunded(db, charge_obj)
+
+    mock_report.assert_called_once_with("ch_test789")
