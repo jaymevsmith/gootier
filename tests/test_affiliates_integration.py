@@ -156,6 +156,62 @@ def test_coupon_create_race_falls_through_to_none():
 
 
 # ---------------------------------------------------------------- #
+# First-payment reporting (routes/stripe_routes.py —
+# _handle_checkout_completed)
+# ---------------------------------------------------------------- #
+
+def _make_user(db, username="checkout", email="checkout@example.com"):
+    user = User(
+        username=username,
+        email=email,
+        hashed_password="x",
+        role="client",
+        tier="trial",
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    return user
+
+
+def test_checkout_completed_reports_payment_under_invoice_id(db):
+    """Subscription-mode Checkout Sessions carry `invoice` (in_...).
+    charge.refunded reports charge["invoice"], and the hub's record_refund
+    matches Conversion.invoice_id exactly — so the first payment must be
+    reported under the invoice id, not the cs_... session id, or a refunded
+    first payment never reverses the commission."""
+    user = _make_user(db)
+    session_obj = {
+        "id": "cs_test_first",
+        "invoice": "in_first_123",
+        "amount_total": 2900,
+        "metadata": {"user_id": str(user.id)},
+    }
+
+    with patch.object(stripe_routes.affiliates, "report_payment") as mock_report:
+        stripe_routes._handle_checkout_completed(db, session_obj)
+
+    mock_report.assert_called_once_with(user.id, 2900, "in_first_123")
+
+
+def test_checkout_completed_falls_back_to_session_id_without_invoice(db):
+    """When the session carries no invoice (e.g. payment-mode sessions),
+    the handler keeps reporting under the cs_... session id."""
+    user = _make_user(db, username="noinv", email="noinv@example.com")
+    session_obj = {
+        "id": "cs_test_noinv",
+        "invoice": None,
+        "amount_total": 2900,
+        "metadata": {"user_id": str(user.id)},
+    }
+
+    with patch.object(stripe_routes.affiliates, "report_payment") as mock_report:
+        stripe_routes._handle_checkout_completed(db, session_obj)
+
+    mock_report.assert_called_once_with(user.id, 2900, "cs_test_noinv")
+
+
+# ---------------------------------------------------------------- #
 # Refund webhook (routes/stripe_routes.py — _handle_charge_refunded)
 # ---------------------------------------------------------------- #
 
