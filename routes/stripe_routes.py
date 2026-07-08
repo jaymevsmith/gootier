@@ -414,9 +414,12 @@ def _handle_checkout_completed(db: Session, session_obj: dict) -> None:
                detail=f"Tier upgraded to {user.tier} via Stripe checkout")
 
     amount_total = session_obj.get("amount_total")
-    session_id = session_obj.get("id") or ""
+    # Report under the invoice id (in_...) when present — charge.refunded
+    # reports charge["invoice"], and the hub matches invoice_id exactly, so
+    # this is what lets a refunded first payment reverse the commission.
+    payment_ref = session_obj.get("invoice") or session_obj.get("id") or ""
     if amount_total is not None:
-        affiliates.report_payment(user.id, amount_total, session_id or f"sub-{user.id}")
+        affiliates.report_payment(user.id, amount_total, payment_ref or f"sub-{user.id}")
 
 
 def _handle_subscription_updated(db: Session, sub_obj: dict) -> None:
