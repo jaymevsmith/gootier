@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from auth import get_current_user, get_current_user_optional
 from database import get_db
 from models import MediaAsset, MediaJob, User, log_action
-from services.credits import balance as credits_balance, spend as credits_spend
+from services.credits import balance as credits_balance
 from services.env_config import get_env
 from services.media import (
     ACCEPTED_IMAGE_TYPES, MAX_UPLOAD_BYTES,
