@@ -14,7 +14,6 @@ from models import (
     EmailBlast, SocialConnection, SocialPost, User, log_action,
 )
 from services.ai_generator import generate_campaign
-from services.credits import balance as credits_balance
 from services.media import (
     MEDIA_MODEL_CATALOG, build_image_payload, build_video_payload,
     resolve_model, submit_job,
@@ -541,19 +540,17 @@ async def ai_schedule(
         1 for i in payload.items
         if media_settings.generate_videos and i.kind == "social_post" and i.video_prompt
     )
-    total_credit_cost = (
-        (image_model["credits"] * img_jobs_wanted if image_model else 0)
-        + (video_model["credits"] * vid_jobs_wanted if video_model else 0)
-    )
-    if total_credit_cost > 0:
-        bal = credits_balance(db, user)
-        if bal < total_credit_cost:
-            raise HTTPException(
-                status_code=402,
-                detail=f"Not enough credits for the media in this campaign "
-                       f"({total_credit_cost} needed, {bal} available). "
-                       f"Top up at /billing or reduce the campaign scope.",
-            )
+    total_estimated_tokens = 0
+    if image_model and img_jobs_wanted:
+        from services.media import estimate_tokens
+        total_estimated_tokens += estimate_tokens(image_model["key"]) * img_jobs_wanted
+    if video_model and vid_jobs_wanted:
+        from services.media import billed_video_seconds, estimate_tokens
+        video_units = billed_video_seconds(video_model["endpoint"], 5)  # matches _enqueue_media_job's video default
+        total_estimated_tokens += estimate_tokens(video_model["key"], units=video_units) * vid_jobs_wanted
+    if total_estimated_tokens > 0:
+        from services.token_wallet import check_sufficient
+        check_sufficient(db, user, total_estimated_tokens)
 
     created_posts = 0
     created_blasts = 0
