@@ -321,7 +321,12 @@ async def create_image_job(
 def _mark_failed(db: Session, user: User, job: MediaJob, error: str) -> None:
     """No refund needed — under JTS billing, nothing is charged until the job
     succeeds (see fal_webhook), so a failure before that point never spent
-    anything."""
+    anything. Guarded against overwriting an already-committed "done" status
+    (e.g. if a post-success debit call raises a transport error rather than
+    the caught JTSError/InsufficientTokensError types) — the job's real
+    result must never be masked by a later billing hiccup."""
+    if job.status == "done":
+        return
     job.status = "failed"
     job.error = error
     job.completed_at = datetime.utcnow()
@@ -958,10 +963,11 @@ async def _run_music_job(job_id: int, prompt: str, seconds: int, user_id: int) -
             log.info("music job %s done -> %s", job.id, url)
         except Exception as e:
             log.exception("music job %s failed: %s", job_id, e)
-            job.status = "failed"
-            job.error = str(e)[:1000]
-            job.completed_at = _dt.utcnow()
-            db.commit()
+            if job.status != "done":
+                job.status = "failed"
+                job.error = str(e)[:1000]
+                job.completed_at = _dt.utcnow()
+                db.commit()
     finally:
         db.close()
 
