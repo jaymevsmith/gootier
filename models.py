@@ -41,6 +41,7 @@ class User(Base):
     trial_started_at = Column(DateTime, default=datetime.utcnow)
     subscribed_until = Column(DateTime, nullable=True)
     stripe_customer_id = Column(String, nullable=True)
+    jts_wallet_id = Column(Integer, nullable=True)
     nickname = Column(String, nullable=True)
     reset_token = Column(String, nullable=True, index=True)
     reset_token_expires_at = Column(DateTime, nullable=True)
@@ -450,6 +451,7 @@ def _upgrade_users(conn):
     _safe_add_column(conn, "users", "calendar_token",            "VARCHAR")
     _safe_add_column(conn, "users", "google_sub",                "VARCHAR")
     _safe_add_column(conn, "users", "referral_code",             "VARCHAR")
+    _safe_add_column(conn, "users", "jts_wallet_id",             "INTEGER")
 
 
 def _upgrade_social_connections(conn):
