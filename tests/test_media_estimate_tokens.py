@@ -15,3 +15,10 @@ def test_estimate_tokens_with_units():
 def test_estimate_tokens_unknown_model_raises_key_error():
     with pytest.raises(KeyError):
         estimate_tokens("not-a-real-model")
+
+
+def test_all_catalog_models_have_jts_rate_and_price_entries():
+    from services.media import MEDIA_MODEL_CATALOG, JTS_RATE_KEY, JTS_PRICE_PER_UNIT_USD
+    catalog_keys = set(MEDIA_MODEL_CATALOG["image"].keys()) | set(MEDIA_MODEL_CATALOG["video"].keys())
+    assert catalog_keys <= set(JTS_RATE_KEY.keys()), f"missing from JTS_RATE_KEY: {catalog_keys - set(JTS_RATE_KEY.keys())}"
+    assert catalog_keys <= set(JTS_PRICE_PER_UNIT_USD.keys()), f"missing from JTS_PRICE_PER_UNIT_USD: {catalog_keys - set(JTS_PRICE_PER_UNIT_USD.keys())}"
