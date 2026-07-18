@@ -898,14 +898,15 @@ async def create_music_job(
 ):
     """Generate an instrumental music clip via fal stable-audio.
 
-    Costs 8 credits — billed up-front, refunded on failure.  Returns the
-    standard MediaJob serialization so the client can poll
+    Billed after success on real per-second fal usage (JTS) — soft
+    pre-flight balance check only, no upfront local-ledger spend.  Returns
+    the standard MediaJob serialization so the client can poll
     ``GET /api/media/jobs/{id}`` until ``result_url`` is set.
     """
     import asyncio as _asyncio
-    cost = 8
-    credits_spend(db, user, cost, reason="music_generate",
-                  detail=f"seconds={payload.seconds} prompt_chars={len(payload.prompt)}")
+    from services.media import estimate_tokens
+    from services.token_wallet import check_sufficient
+    check_sufficient(db, user, estimate_tokens("stable-audio", units=payload.seconds))
     job = MediaJob(
         user_id=user.id,
         kind="audio",
@@ -914,7 +915,6 @@ async def create_music_job(
         model_endpoint="fal-ai/stable-audio",
         prompt=payload.prompt[:500],
         status="queued",
-        cost_credits=cost,
     )
     db.add(job)
     db.commit()
@@ -947,15 +947,17 @@ async def _run_music_job(job_id: int, prompt: str, seconds: int, user_id: int) -
             job.status = "done"
             job.completed_at = _dt.utcnow()
             db.commit()
+            from services.media import JTS_RATE_KEY
+            from services.token_wallet import debit_after_success
+            user = db.query(User).filter(User.id == user_id).first()
+            debit_after_success(
+                db, user, model_key=JTS_RATE_KEY["stable-audio"],
+                request_id=f"gootier-mediajob-{job.id}",
+                units=seconds,
+            )
             log.info("music job %s done -> %s", job.id, url)
         except Exception as e:
             log.exception("music job %s failed: %s", job_id, e)
-            from services.credits import grant as _grant
-            user = db.query(User).filter(User.id == user_id).first()
-            if user and job.cost_credits:
-                _grant(db, user, job.cost_credits,
-                       reason=f"refund_failed_{job.id}",
-                       detail=f"Auto-refund — music gen failed: {e}")
             job.status = "failed"
             job.error = str(e)[:1000]
             job.completed_at = _dt.utcnow()

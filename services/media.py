@@ -99,6 +99,12 @@ MEDIA_MODEL_CATALOG = {
 
 # Maps this catalog's short keys to the JTS Rate.model_key registered for
 # them (see Jhome-Token-Service/scripts/register_gootier_rates.py).
+#
+# "stable-audio" is not part of MEDIA_MODEL_CATALOG/TTS_MODEL_CATALOG (music
+# generation has a single fixed fal endpoint, no model picker) — it's a
+# Gootier-internal key that exists purely to hang the JTS rate/price mapping
+# off of, used consistently by estimate_tokens(), debit_after_success(), and
+# the MediaJob.model_key column for /api/media/jobs/music.
 JTS_RATE_KEY = {
     "nano-banana-2":   "fal-nano-banana-2",
     "nano-banana-pro": "fal-nano-banana-pro",
@@ -108,6 +114,7 @@ JTS_RATE_KEY = {
     "veo-3.1":          "fal-veo-3.1",
     "veo-3.1-fast":     "fal-veo-3.1-fast",
     "eleven-turbo":     "fal-elevenlabs-tts-turbo",
+    "stable-audio":     "fal-stable-audio-music",
 }
 
 # Real USD price per unit, mirrored from the same script — used only for the
@@ -122,6 +129,7 @@ JTS_PRICE_PER_UNIT_USD = {
     "veo-3.1":          0.40,
     "veo-3.1-fast":     0.15,
     "eleven-turbo":     0.00005,
+    "stable-audio":     0.00125,
 }
 
 

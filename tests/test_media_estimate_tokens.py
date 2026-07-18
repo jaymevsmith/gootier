@@ -28,6 +28,21 @@ def test_all_catalog_models_have_jts_rate_and_price_entries():
     assert catalog_keys <= set(JTS_PRICE_PER_UNIT_USD.keys()), f"missing from JTS_PRICE_PER_UNIT_USD: {catalog_keys - set(JTS_PRICE_PER_UNIT_USD.keys())}"
 
 
+def test_stable_audio_has_jts_rate_and_price_entry():
+    # "stable-audio" (the music-generation job) isn't part of
+    # MEDIA_MODEL_CATALOG/TTS_MODEL_CATALOG — it's a Gootier-internal key used
+    # only to hang the JTS rate/price mapping off of for /api/media/jobs/music.
+    # It's asserted separately here (rather than folded into the catalog-keys
+    # union above) so a future drift in its rate/price wiring is still caught.
+    from services.media import JTS_RATE_KEY, JTS_PRICE_PER_UNIT_USD
+    assert JTS_RATE_KEY["stable-audio"] == "fal-stable-audio-music"
+    assert "stable-audio" in JTS_PRICE_PER_UNIT_USD
+
+
+def test_estimate_tokens_stable_audio():
+    assert estimate_tokens("stable-audio", units=30) == 37_500
+
+
 def test_billed_video_seconds_kling_buckets_down_to_5():
     assert billed_video_seconds(
         "fal-ai/kling-video/v2.1/master/image-to-video", 9
