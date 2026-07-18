@@ -232,27 +232,42 @@ async def create_tokens_checkout(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    from services.token_wallet import ensure_wallet
-    wallet_id = ensure_wallet(db, user)
     bundle_name = payload.get("bundle_name")
     if not bundle_name:
         raise HTTPException(status_code=400, detail="bundle_name is required")
 
+    from services.token_wallet import ensure_wallet
+
     import httpx
     from services.env_config import get_env
     base_url = get_env("TOKEN_SERVICE_URL", "https://jhome-token-service-production.up.railway.app")
-    resp = httpx.post(
-        f"{base_url}/checkout",
-        headers={"X-API-Key": get_env("TOKEN_SERVICE_API_KEY", "")},
-        json={
-            "wallet_id": wallet_id,
-            "bundle_name": bundle_name,
-            "success_url": f"{_app_url()}/billing?credits_added=1",
-            "cancel_url": f"{_app_url()}/billing?credits_cancelled=1",
-        },
-        timeout=10,
-    )
+    try:
+        wallet_id = ensure_wallet(db, user)
+        resp = httpx.post(
+            f"{base_url}/checkout",
+            headers={"X-API-Key": get_env("TOKEN_SERVICE_API_KEY", "")},
+            json={
+                "wallet_id": wallet_id,
+                "bundle_name": bundle_name,
+                "success_url": f"{_app_url()}/billing?credits_added=1",
+                "cancel_url": f"{_app_url()}/billing?credits_cancelled=1",
+            },
+            timeout=10,
+        )
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception(
+            "tokens checkout failed (JTS unreachable or ensure_wallet error): user=%s bundle_name=%s",
+            user.id, bundle_name,
+        )
+        raise HTTPException(status_code=502, detail="Could not start checkout")
+
     if resp.status_code != 200:
+        logger.error(
+            "tokens checkout non-200 from JTS: user=%s bundle_name=%s status=%s body=%s",
+            user.id, bundle_name, resp.status_code, resp.text[:500],
+        )
         raise HTTPException(status_code=502, detail="Could not start checkout")
     return {"checkout_url": resp.json()["checkout_url"]}
 
@@ -294,6 +309,19 @@ async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
         # Token-pack purchases now go through JTS's own checkout + webhook
         # entirely out of band — this handler only needs to cover Gootier's
         # own tier-subscription checkout (mode=subscription).
+        #
+        # No compatibility shim was added for the old local-ledger topup
+        # Checkout flow (_handle_topup_completed, removed alongside the route
+        # that created those sessions) even though a customer with an old
+        # topup Checkout URL still open at deploy time could complete payment
+        # after deploy and land here with no matching handler (this handler
+        # silently no-ops for that session type, returning 200 OK per Stripe's
+        # webhook contract, without granting anything). This is intentionally
+        # not handled: Gootier is pre-launch with no real paying customers or
+        # live topup sessions (see
+        # docs/superpowers/specs/2026-07-17-jhome-token-service-migration-design.md),
+        # so there is no possible in-flight old-style Checkout session for
+        # this gap to affect. Revisit if this ever changes.
         _handle_checkout_completed(db, obj)
     elif etype == "customer.subscription.updated":
         _handle_subscription_updated(db, obj)

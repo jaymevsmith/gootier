@@ -15,8 +15,8 @@ from sqlalchemy.orm import Session
 from auth import get_current_user, get_current_user_optional
 from database import get_db
 from models import MediaAsset, MediaJob, User, log_action
-from services.credits import balance as credits_balance
 from services.env_config import get_env
+from services.token_wallet import balance_tokens
 from services.media import (
     ACCEPTED_IMAGE_TYPES, MAX_UPLOAD_BYTES,
     MEDIA_MODEL_CATALOG, build_image_payload, build_video_payload,
@@ -61,7 +61,7 @@ async def assets_page(
     return templates.TemplateResponse(request, "assets.html", {
         "user": user,
         "assets": items,
-        "credits": credits_balance(db, user),
+        "credit_balance": balance_tokens(db, user) // 1000,
         "kinds": VALID_KINDS,
     })
 
@@ -194,16 +194,24 @@ async def delete_asset(
 
 @router.get("/api/media/catalog")
 async def media_catalog(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    """Catalog of available models + the user's current credit balance —
-    consumed by the generation modals in /compose, /ai-builder, /assets."""
-    bal = credits_balance(db, user)
+    """Catalog of available models + the user's current JTS token balance
+    (display units, `_display` convention: raw tokens // 1000) — consumed by
+    the generation modals in /compose, /ai-builder, /assets.
+
+    Per-model cost isn't surfaced here: real spend is billed against actual
+    usage (real fal duration, real Anthropic tokens, etc.) through the Jhome
+    Token Service, not a flat per-model number, so there's no single accurate
+    figure to show per model. Affordability is enforced server-side at
+    submit time (see services/token_wallet.check_sufficient) — the client
+    doesn't do a pre-flight cost comparison.
+    """
+    bal = balance_tokens(db, user) // 1000
     out = {"balance": bal, "models": {}}
     for kind, options in MEDIA_MODEL_CATALOG.items():
         out["models"][kind] = [
             {
                 "key": k,
                 "label": v["label"],
-                "credits": v["credits"],
                 "supports_reference": v.get("supports_reference", False),
                 "default": v.get("default", False),
             }
