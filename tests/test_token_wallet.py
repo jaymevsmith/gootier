@@ -4,16 +4,21 @@ from fastapi import HTTPException
 
 from models import User
 from services import token_wallet
+from services.jts_client import InsufficientTokensError, JTSError
 
 
 class FakeJTSClient:
-    def __init__(self, balance=2_000_000):
+    def __init__(self, balance=2_000_000, raise_on_debit=None, raise_on_ensure_wallet=None):
         self.balance = balance
         self.debit_calls = []
         self.ensure_wallet_calls = []
+        self.raise_on_debit = raise_on_debit
+        self.raise_on_ensure_wallet = raise_on_ensure_wallet
 
     def ensure_wallet(self, external_user_id, email=""):
         self.ensure_wallet_calls.append(external_user_id)
+        if self.raise_on_ensure_wallet is not None:
+            raise self.raise_on_ensure_wallet
         return 999
 
     def get_balance(self, wallet_id):
@@ -22,6 +27,8 @@ class FakeJTSClient:
     def debit(self, wallet_id, model_key, request_id, **usage):
         self.debit_calls.append({"wallet_id": wallet_id, "model_key": model_key,
                                   "request_id": request_id, **usage})
+        if self.raise_on_debit is not None:
+            raise self.raise_on_debit
         return {"tokens_charged": 8100, "balance_tokens": self.balance - 8100}
 
 
@@ -82,3 +89,50 @@ def test_debit_after_success_passes_through_usage_and_request_id(db, monkeypatch
         "wallet_id": 999, "model_key": "fal-nano-banana-2",
         "request_id": "gootier-mediajob-123", "units": 1,
     }]
+
+
+def test_debit_after_success_never_raises_on_insufficient_tokens(db, monkeypatch):
+    fake = FakeJTSClient(raise_on_debit=InsufficientTokensError(
+        balance_tokens=100, tokens_required=8100,
+        balance_display=0, tokens_required_display=8,
+    ))
+    monkeypatch.setattr(token_wallet, "_client", lambda: fake)
+    user = _user(db)
+
+    result = token_wallet.debit_after_success(
+        db, user, model_key="fal-nano-banana-2",
+        request_id="gootier-mediajob-124", units=1,
+    )
+
+    assert result is None
+
+
+def test_debit_after_success_never_raises_on_generic_jts_error(db, monkeypatch):
+    fake = FakeJTSClient(raise_on_debit=JTSError("debit failed: 500 boom"))
+    monkeypatch.setattr(token_wallet, "_client", lambda: fake)
+    user = _user(db)
+
+    result = token_wallet.debit_after_success(
+        db, user, model_key="fal-nano-banana-2",
+        request_id="gootier-mediajob-125", units=1,
+    )
+
+    assert result is None
+
+
+def test_debit_after_success_never_raises_when_ensure_wallet_fails(db, monkeypatch):
+    """Reproduces the bug: wallet id isn't cached yet (e.g. debit called from a
+    different request context, like the fal webhook handler) and JTS's
+    ensure-wallet endpoint is transiently unreachable. debit_after_success must
+    still return None rather than let the JTSError escape."""
+    fake = FakeJTSClient(raise_on_ensure_wallet=JTSError("ensure_wallet failed: 500 boom"))
+    monkeypatch.setattr(token_wallet, "_client", lambda: fake)
+    user = _user(db)
+    assert user.jts_wallet_id is None  # not cached yet, forces the ensure_wallet call
+
+    result = token_wallet.debit_after_success(
+        db, user, model_key="fal-nano-banana-2",
+        request_id="gootier-mediajob-126", units=1,
+    )
+
+    assert result is None

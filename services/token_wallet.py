@@ -24,8 +24,14 @@ def _client() -> JTSClient:
 
 
 def ensure_wallet(db: Session, user: User) -> int:
-    """Get-or-create the user's JTS wallet id, caching it on the User row."""
-    if user.jts_wallet_id:
+    """Get-or-create the user's JTS wallet id, caching it on the User row.
+
+    Known tradeoff: two near-simultaneous first-time calls for the same user
+    could both miss the cache below and both call JTS's ensure-wallet endpoint.
+    Harmless — JTS's endpoint is documented as idempotent/get-or-create keyed
+    by external_user_id, so both calls return the same wallet_id — just
+    wasteful. Not fixed here, matching this migration's other known tradeoffs."""
+    if user.jts_wallet_id is not None:
         return user.jts_wallet_id
     wallet_id = _client().ensure_wallet(external_user_id=str(user.id), email=user.email)
     user.jts_wallet_id = wallet_id
@@ -43,6 +49,12 @@ def check_sufficient(db: Session, user: User, estimated_tokens: int) -> None:
     Raises 402 if the current balance clearly can't cover the estimate."""
     current = balance_tokens(db, user)
     if current < estimated_tokens:
+        # get_balance() only returns the raw token count today (by design, from
+        # an earlier approved task) — no `_display` field is available here to
+        # render instead. Per JTS's own integration doc, dividing by 1000 and
+        # rounding is the documented fallback for a response shape that doesn't
+        # carry a `_display` field yet; this isn't a "recompute instead of
+        # rendering `_display`" oversight.
         raise HTTPException(
             status_code=402,
             detail=f"Insufficient tokens: you have {current // 1000}, this needs "
@@ -55,8 +67,8 @@ def debit_after_success(db: Session, user: User, model_key: str, request_id: str
     """Call only after the AI/media call has already succeeded. Never raises —
     a debit failure must not undo or block a result the user already has;
     it's logged loudly instead so it can be reconciled manually."""
-    wallet_id = ensure_wallet(db, user)
     try:
+        wallet_id = ensure_wallet(db, user)
         return _client().debit(wallet_id, model_key, request_id, **usage)
     except InsufficientTokensError:
         log.error("token debit found insufficient balance after success: "
