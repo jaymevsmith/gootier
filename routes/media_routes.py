@@ -750,8 +750,10 @@ async def compose_ai_plan(
     feed this straight into the existing ``POST /api/media/jobs/compose``
     endpoint after the user reviews + edits.
 
-    Costs 2 credits (Sonnet planning call only — music generation is billed
-    separately if the user accepts the suggested music_prompt).
+    Billed after success on real Anthropic token usage (JTS) — soft
+    pre-flight balance check only, no upfront local-ledger spend. Covers
+    the Sonnet planning call only — music generation is billed separately
+    if the user accepts the suggested music_prompt.
     """
     # 1) Validate clips belong to the user, are video, are done.
     sources = db.query(MediaJob).filter(
@@ -774,13 +776,16 @@ async def compose_ai_plan(
         "prompt": (c.prompt or "")[:200],
     } for i, c in enumerate(ordered_clips)]
 
-    credits_spend(db, user, 2, reason="video_compose_ai_plan",
-                  detail=f"clips={len(ordered_clips)} brief_chars={len(payload.brief)}")
+    from services.token_wallet import check_sufficient, debit_after_success
+    # Conservative pre-flight estimate: ~2000 input + 2048 max output tokens
+    # at anthropic-sonnet-5 blended pricing ($3/$15 per 1M). Real debit below
+    # always uses the actual reported usage, never this estimate.
+    check_sufficient(db, user, estimated_tokens=40_000)
 
     # 2) Call Sonnet for the plan.
     from services.ai_generator import plan_video_compose
     try:
-        plan = plan_video_compose(
+        result = plan_video_compose(
             brief=payload.brief,
             clip_meta=clip_meta,
             want_music=payload.want_music,
@@ -788,12 +793,15 @@ async def compose_ai_plan(
             style=payload.style,
         )
     except Exception as e:
-        # Refund the 2 credits on failure — same pattern as compose worker.
-        from services.credits import grant as _grant
-        _grant(db, user, 2,
-               reason="refund_ai_plan_failed",
-               detail=f"AI plan failed: {str(e)[:200]}")
         raise HTTPException(status_code=502, detail=f"AI plan failed: {e}")
+
+    usage = result.pop("_usage")
+    plan = result
+    debit_after_success(
+        db, user, model_key="anthropic-sonnet-5",
+        request_id=f"gootier-aiplan-{py_secrets.token_urlsafe(12)}",
+        input_tokens=usage["input_tokens"], output_tokens=usage["output_tokens"],
+    )
 
     # 3) Sanitize the plan against the same allowlists the compose endpoint uses.
     #

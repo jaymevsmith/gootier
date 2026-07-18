@@ -120,6 +120,23 @@ def test_debit_after_success_never_raises_on_generic_jts_error(db, monkeypatch):
     assert result is None
 
 
+def test_debit_after_success_never_raises_on_non_jts_exception(db, monkeypatch):
+    """A raw transport-level failure (e.g. httpx connect/read timeout) is not a
+    JTSError subclass. debit_after_success must still swallow it and return
+    None rather than let it escape into a caller that already has a
+    successful result (e.g. the compose/ai-plan synchronous handler)."""
+    fake = FakeJTSClient(raise_on_debit=ConnectionError("connection refused"))
+    monkeypatch.setattr(token_wallet, "_client", lambda: fake)
+    user = _user(db)
+
+    result = token_wallet.debit_after_success(
+        db, user, model_key="anthropic-sonnet-5",
+        request_id="gootier-aiplan-127", input_tokens=100, output_tokens=200,
+    )
+
+    assert result is None
+
+
 def test_debit_after_success_never_raises_when_ensure_wallet_fails(db, monkeypatch):
     """Reproduces the bug: wallet id isn't cached yet (e.g. debit called from a
     different request context, like the fal webhook handler) and JTS's

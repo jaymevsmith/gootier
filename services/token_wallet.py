@@ -78,3 +78,13 @@ def debit_after_success(db: Session, user: User, model_key: str, request_id: str
         log.exception("token debit failed: user=%s model_key=%s request_id=%s",
                       user.id, model_key, request_id)
         return None
+    except Exception:
+        # Catch-all so a raw transport-level failure (e.g. httpx connect/read
+        # timeout, DNS error) — which is NOT a JTSError subclass — can't
+        # escape and blow up a caller that already has a successful result
+        # (e.g. compose_ai_plan, a synchronous request handler). The typed
+        # excepts above are the expected cases; this is the safety net for
+        # everything else so the "never raises" contract actually holds.
+        log.exception("token debit failed unexpectedly (non-JTS error): "
+                      "user=%s model_key=%s request_id=%s", user.id, model_key, request_id)
+        return None

@@ -143,13 +143,16 @@ def plan_video_compose(brief: str, clip_meta: List[dict],
         messages=[{"role": "user", "content": user_msg}],
     )
     text = "".join(b.text for b in response.content if b.type == "text").strip()
+    usage = {"input_tokens": response.usage.input_tokens,
+             "output_tokens": response.usage.output_tokens}
     try:
-        return json.loads(text)
+        plan = json.loads(text)
     except json.JSONDecodeError:
         cleaned = text.strip("`")
         if cleaned.startswith("json"):
             cleaned = cleaned[4:].strip()
-        return json.loads(cleaned)
+        plan = json.loads(cleaned)
+    return {**plan, "_usage": usage}
 
 
 def generate_campaign(plan: str, schedule: str = "", count: int = 5,
