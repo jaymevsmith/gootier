@@ -97,6 +97,39 @@ MEDIA_MODEL_CATALOG = {
 }
 
 
+# Maps this catalog's short keys to the JTS Rate.model_key registered for
+# them (see Jhome-Token-Service/scripts/register_gootier_rates.py).
+JTS_RATE_KEY = {
+    "nano-banana-2":   "fal-nano-banana-2",
+    "nano-banana-pro": "fal-nano-banana-pro",
+    "flux-pro-ultra":  "fal-flux-pro-ultra",
+    "kling-2.1-master": "fal-kling-2.1-master",
+    "kling-2.1-pro":    "fal-kling-2.1-pro",
+    "veo-3.1":          "fal-veo-3.1",
+    "veo-3.1-fast":     "fal-veo-3.1-fast",
+}
+
+# Real USD price per unit, mirrored from the same script — used only for the
+# soft pre-flight balance estimate (never for the actual debit, which always
+# reports real usage to JTS).
+JTS_PRICE_PER_UNIT_USD = {
+    "nano-banana-2":   0.08,
+    "nano-banana-pro": 0.15,
+    "flux-pro-ultra":  0.06,
+    "kling-2.1-master": 0.28,
+    "kling-2.1-pro":    0.098,
+    "veo-3.1":          0.40,
+    "veo-3.1-fast":     0.15,
+}
+
+
+def estimate_tokens(model_key: str, units: float = 1) -> int:
+    """USD cost estimate -> raw JTS tokens (1 token = $0.000001), for the
+    soft pre-flight balance check only."""
+    usd = JTS_PRICE_PER_UNIT_USD[model_key] * units
+    return int(usd * 1_000_000)
+
+
 def catalog_for(kind: str) -> dict:
     if kind not in MEDIA_MODEL_CATALOG:
         raise ValueError(f"Unknown media kind: {kind!r}")

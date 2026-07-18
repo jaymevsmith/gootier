@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from auth import get_current_user, get_current_user_optional
 from database import get_db
 from models import MediaAsset, MediaJob, User, log_action
-from services.credits import balance as credits_balance, grant as credits_grant, spend as credits_spend
+from services.credits import balance as credits_balance, spend as credits_spend
 from services.env_config import get_env
 from services.media import (
     ACCEPTED_IMAGE_TYPES, MAX_UPLOAD_BYTES,
@@ -272,8 +272,9 @@ async def create_image_job(
                    f"Pick one from your library or choose a text-only model.",
         )
 
-    cost = int(model["credits"])
-    credits_spend(db, user, cost, reason="image_gen", detail=f"model={model['key']}")
+    from services.media import estimate_tokens
+    from services.token_wallet import check_sufficient
+    check_sufficient(db, user, estimate_tokens(model["key"]))
 
     webhook_token = py_secrets.token_urlsafe(24)
     job = MediaJob(
@@ -286,7 +287,6 @@ async def create_image_job(
         ref_asset_ids=",".join(str(i) for i in payload.asset_ids) if payload.asset_ids else None,
         aspect_ratio=payload.aspect_ratio,
         status="queued",
-        cost_credits=cost,
         webhook_token=webhook_token,
     )
     db.add(job)
@@ -308,25 +308,24 @@ async def create_image_job(
         log_action(db, user, "CREATE", "MediaJob", str(job.id),
                    detail=f"image submit endpoint={model['endpoint']} req={request_id} webhook={'yes' if webhook_url else 'no'}")
     except HTTPException:
-        _refund_and_fail(db, user, job, "fal submission failed (HTTPException)")
+        _mark_failed(db, user, job, "fal submission failed (HTTPException)")
         raise
     except Exception as e:
-        _refund_and_fail(db, user, job, f"fal submission failed: {e}")
+        _mark_failed(db, user, job, f"fal submission failed: {e}")
         raise HTTPException(status_code=502, detail=f"Image generation failed to start: {e}")
 
     db.refresh(job)
     return _serialize_job(job)
 
 
-def _refund_and_fail(db: Session, user: User, job: MediaJob, error: str) -> None:
+def _mark_failed(db: Session, user: User, job: MediaJob, error: str) -> None:
+    """No refund needed — under JTS billing, nothing is charged until the job
+    succeeds (see fal_webhook), so a failure before that point never spent
+    anything."""
     job.status = "failed"
     job.error = error
     job.completed_at = datetime.utcnow()
     db.commit()
-    if job.cost_credits:
-        credits_grant(db, user, job.cost_credits,
-                      reason=f"refund_failed_{job.id}",
-                      detail=f"Auto-refund for failed media job #{job.id}: {error[:120]}")
 
 
 @router.get("/api/media/jobs/{job_id}")
@@ -371,7 +370,7 @@ async def get_media_job(
             db.commit()
             log_action(db, user, "UPDATE", "MediaJob", str(job.id), detail="completed")
         except Exception as e:
-            _refund_and_fail(db, user, job, f"result fetch failed: {e}")
+            _mark_failed(db, user, job, f"result fetch failed: {e}")
     elif phase == "running" and job.status != "running":
         job.status = "running"
         db.commit()
@@ -1004,10 +1003,10 @@ async def create_video_job(
         log_action(db, user, "CREATE", "MediaJob", str(job.id),
                    detail=f"video submit endpoint={model['endpoint']} req={request_id} webhook={'yes' if webhook_url else 'no'}")
     except HTTPException:
-        _refund_and_fail(db, user, job, "fal submission failed (HTTPException)")
+        _mark_failed(db, user, job, "fal submission failed (HTTPException)")
         raise
     except Exception as e:
-        _refund_and_fail(db, user, job, f"fal submission failed: {e}")
+        _mark_failed(db, user, job, f"fal submission failed: {e}")
         raise HTTPException(status_code=502, detail=f"Video generation failed to start: {e}")
 
     db.refresh(job)
@@ -1059,13 +1058,24 @@ async def fal_webhook(
             job.status = "done"
             job.completed_at = datetime.utcnow()
             db.commit()
+            from services.media import JTS_RATE_KEY
+            from services.token_wallet import debit_after_success
+            if job.kind == "video":
+                units = float(job.duration_seconds or 5)
+            else:
+                units = 1
+            debit_after_success(
+                db, job.user, model_key=JTS_RATE_KEY[job.model_key],
+                request_id=f"gootier-mediajob-{job.id}",
+                units=units,
+            )
             log_action(db, job.user, "UPDATE", "MediaJob", str(job.id),
                        detail="completed via webhook")
         except Exception as e:
-            _refund_and_fail(db, job.user, job, f"webhook result parse failed: {e}")
+            _mark_failed(db, job.user, job, f"webhook result parse failed: {e}")
     elif status == "ERROR":
         err = payload.get("error") or "fal reported ERROR"
-        _refund_and_fail(db, job.user, job, str(err))
+        _mark_failed(db, job.user, job, str(err))
 
     return {"ok": True}
 
