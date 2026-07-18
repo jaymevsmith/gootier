@@ -974,8 +974,9 @@ async def create_video_job(
     if not asset:
         raise HTTPException(status_code=400, detail="Reference asset not found or not yours.")
 
-    cost = int(model["credits"])
-    credits_spend(db, user, cost, reason="video_gen", detail=f"model={model['key']}")
+    from services.media import estimate_tokens
+    from services.token_wallet import check_sufficient
+    check_sufficient(db, user, estimate_tokens(model["key"], units=payload.duration_seconds or 5))
 
     webhook_token = py_secrets.token_urlsafe(24)
     job = MediaJob(
@@ -989,7 +990,6 @@ async def create_video_job(
         aspect_ratio=payload.aspect_ratio,
         duration_seconds=payload.duration_seconds,
         status="queued",
-        cost_credits=cost,
         webhook_token=webhook_token,
     )
     db.add(job)
