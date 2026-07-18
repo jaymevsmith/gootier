@@ -14,7 +14,7 @@ from models import (
     EmailBlast, SocialConnection, SocialPost, User, log_action,
 )
 from services.ai_generator import generate_campaign
-from services.credits import balance as credits_balance, spend as credits_spend
+from services.credits import balance as credits_balance
 from services.media import (
     MEDIA_MODEL_CATALOG, build_image_payload, build_video_payload,
     resolve_model, submit_job,
@@ -631,16 +631,29 @@ async def ai_schedule(
 async def _enqueue_media_job(db, user, *, kind: str, model: dict, prompt: str,
                               ref_urls: list, ref_asset_ids: list,
                               request: Optional[Request] = None):
-    """Spend credits + create a MediaJob row + submit to fal. Returns the job
-    on success, or None if any step failed (with credit refund + log)."""
+    """Pre-flight balance check + create a MediaJob row + submit to fal.
+    Returns the job on success, or None if any step failed.
+
+    No credits are spent up front — under JTS billing, the real debit
+    happens on success via the shared `fal_webhook`/polling completion
+    path (see services/token_wallet.debit_after_success), same as
+    routes/media_routes.py's create_image_job/create_video_job. So there
+    is nothing to refund on failure here either."""
     from models import MediaJob
     import secrets as _py_secrets
-    cost = int(model["credits"])
-    try:
-        credits_spend(db, user, cost, reason=f"{kind}_gen",
-                       detail=f"AI campaign — model={model['key']}")
-    except HTTPException:
-        return None
+    from services.media import billed_video_seconds, estimate_tokens
+    from services.token_wallet import check_sufficient
+
+    # Video here always uses build_video_payload's default 5s (no duration
+    # is plumbed through the AI-campaign flow yet) — keep the pre-flight
+    # estimate and the row's duration_seconds consistent with that so the
+    # eventual real debit uses the same value.
+    duration_seconds = 5 if kind == "video" else None
+    if kind == "video":
+        units = billed_video_seconds(model["endpoint"], duration_seconds)
+    else:
+        units = 1
+    check_sufficient(db, user, estimate_tokens(model["key"], units=units))
 
     webhook_token = _py_secrets.token_urlsafe(24)
     job = MediaJob(
@@ -652,7 +665,7 @@ async def _enqueue_media_job(db, user, *, kind: str, model: dict, prompt: str,
         prompt=prompt,
         ref_asset_ids=",".join(str(i) for i in ref_asset_ids),
         status="queued",
-        cost_credits=cost,
+        duration_seconds=duration_seconds,
         webhook_token=webhook_token,
     )
     db.add(job)
@@ -672,9 +685,6 @@ async def _enqueue_media_job(db, user, *, kind: str, model: dict, prompt: str,
         job.status = "running"
         return job
     except Exception as e:
-        from services.credits import grant as credits_grant
-        credits_grant(db, user, cost, reason=f"refund_failed_{job.id}",
-                       detail=f"Auto-refund — AI campaign media job failed: {e}")
         job.status = "failed"
         job.error = f"submit failed: {e}"
         return None

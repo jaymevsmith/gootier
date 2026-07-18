@@ -357,6 +357,15 @@ def _normalize_video_duration(endpoint: str, seconds: int) -> str:
     return str(seconds)
 
 
+def billed_video_seconds(endpoint: str, requested_seconds: int) -> float:
+    """The actual duration fal will generate/bill for, after bucketing —
+    use this for BOTH the pre-flight token estimate and the real debit
+    `units`, never the raw user-requested duration (fal's enum buckets
+    don't match arbitrary requested values)."""
+    bucketed = _normalize_video_duration(endpoint, requested_seconds)
+    return float(bucketed.rstrip("s"))
+
+
 def build_video_payload(model: dict, prompt: str, ref_url: str,
                           duration_seconds: int = 5,
                           aspect_ratio: str = "auto",

@@ -368,10 +368,10 @@ async def get_media_job(
             job.status = "done"
             job.completed_at = datetime.utcnow()
             db.commit()
-            from services.media import JTS_RATE_KEY
+            from services.media import JTS_RATE_KEY, billed_video_seconds
             from services.token_wallet import debit_after_success
             if job.kind == "video":
-                units = float(job.duration_seconds or 5)
+                units = billed_video_seconds(job.model_endpoint, job.duration_seconds or 5)
             else:
                 units = 1
             debit_after_success(
@@ -398,7 +398,7 @@ class VideoJobCreate(BaseModel):
     prompt: str = Field(..., min_length=3, max_length=4000)
     model_key: Optional[str] = None
     asset_id: int  # video models take a single image_url
-    duration_seconds: int = 5
+    duration_seconds: int = Field(5, ge=1, le=60)
     aspect_ratio: str = "auto"
     resolution: str = "720p"
     generate_audio: bool = True
@@ -974,9 +974,12 @@ async def create_video_job(
     if not asset:
         raise HTTPException(status_code=400, detail="Reference asset not found or not yours.")
 
-    from services.media import estimate_tokens
+    from services.media import billed_video_seconds, estimate_tokens
     from services.token_wallet import check_sufficient
-    check_sufficient(db, user, estimate_tokens(model["key"], units=payload.duration_seconds or 5))
+    check_sufficient(
+        db, user,
+        estimate_tokens(model["key"], units=billed_video_seconds(model["endpoint"], payload.duration_seconds)),
+    )
 
     webhook_token = py_secrets.token_urlsafe(24)
     job = MediaJob(
@@ -1069,10 +1072,10 @@ async def fal_webhook(
             job.status = "done"
             job.completed_at = datetime.utcnow()
             db.commit()
-            from services.media import JTS_RATE_KEY
+            from services.media import JTS_RATE_KEY, billed_video_seconds
             from services.token_wallet import debit_after_success
             if job.kind == "video":
-                units = float(job.duration_seconds or 5)
+                units = billed_video_seconds(job.model_endpoint, job.duration_seconds or 5)
             else:
                 units = 1
             debit_after_success(
