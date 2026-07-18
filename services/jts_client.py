@@ -64,17 +64,22 @@ class JTSClient:
             json={"model_key": model_key, "request_id": request_id, **usage},
         )
         if resp.status_code == 402:
-            payload = resp.json()
-            # JTS wraps error details under a `detail` key by FastAPI HTTPException
-            # convention in production, but callers (and this test suite) may also
-            # get the fields flat at the top level. Handle both shapes.
-            body = payload.get("detail", payload) if isinstance(payload.get("detail"), dict) else payload
-            raise InsufficientTokensError(
-                balance_tokens=body["balance_tokens"],
-                tokens_required=body["tokens_required"],
-                balance_display=body["balance_display"],
-                tokens_required_display=body["tokens_required_display"],
-            )
+            try:
+                payload = resp.json()
+                # JTS wraps error details under a `detail` key by FastAPI HTTPException
+                # convention in production, but callers (and this test suite) may also
+                # get the fields flat at the top level. Handle both shapes.
+                body = payload["detail"] if isinstance(payload.get("detail"), dict) else payload
+                raise InsufficientTokensError(
+                    balance_tokens=body["balance_tokens"],
+                    tokens_required=body["tokens_required"],
+                    balance_display=body["balance_display"],
+                    tokens_required_display=body["tokens_required_display"],
+                )
+            except InsufficientTokensError:
+                raise
+            except Exception:
+                raise JTSError(f"debit failed: {resp.status_code} {resp.text}")
         if resp.status_code != 200:
             raise JTSError(f"debit failed: {resp.status_code} {resp.text}")
         return resp.json()

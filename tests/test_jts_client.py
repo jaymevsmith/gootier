@@ -66,3 +66,48 @@ def test_debit_raises_jts_error_on_unexpected_status():
     with pytest.raises(JTSError):
         _client(handler).debit(wallet_id=42, model_key="fal-nano-banana-2",
                                 request_id="gootier-mediajob-9", units=1)
+
+
+def test_debit_raises_insufficient_tokens_on_402_wrapped_in_detail():
+    def handler(request):
+        return httpx.Response(402, json={"detail": {
+            "error": "insufficient tokens", "balance_tokens": 100, "balance_display": 0,
+            "tokens_required": 8100, "tokens_required_display": 8,
+        }})
+    with pytest.raises(InsufficientTokensError) as exc_info:
+        _client(handler).debit(wallet_id=42, model_key="fal-nano-banana-2",
+                                request_id="gootier-mediajob-9", units=1)
+    assert exc_info.value.balance_tokens == 100
+    assert exc_info.value.tokens_required == 8100
+
+
+def test_ensure_wallet_raises_jts_error_on_unexpected_status():
+    def handler(request):
+        return httpx.Response(500, text="boom")
+    with pytest.raises(JTSError):
+        _client(handler).ensure_wallet(external_user_id="7", email="a@b.com")
+
+
+def test_get_balance_raises_jts_error_on_unexpected_status():
+    def handler(request):
+        return httpx.Response(500, text="boom")
+    with pytest.raises(JTSError):
+        _client(handler).get_balance(42)
+
+
+def test_debit_raises_jts_error_on_402_with_missing_key():
+    def handler(request):
+        return httpx.Response(402, json={"detail": {
+            "balance_tokens": 100, "tokens_required": 8100,
+        }})
+    with pytest.raises(JTSError):
+        _client(handler).debit(wallet_id=42, model_key="fal-nano-banana-2",
+                                request_id="gootier-mediajob-9", units=1)
+
+
+def test_debit_raises_jts_error_on_402_with_non_json_body():
+    def handler(request):
+        return httpx.Response(402, text="Payment required")
+    with pytest.raises(JTSError):
+        _client(handler).debit(wallet_id=42, model_key="fal-nano-banana-2",
+                                request_id="gootier-mediajob-9", units=1)
