@@ -142,6 +142,22 @@ async def signup_submit(
     db.refresh(user)
     log_action(db, user, "SIGNUP", "User", str(user.id))
 
+    # Eagerly create the JTS wallet (and grant the trial balance) at signup
+    # rather than lazily on first AI use. Deliberately wrapped: unlike
+    # debit_after_success, ensure_wallet() has no built-in try/except of its
+    # own (by design — check_sufficient/balance_tokens need it to be able to
+    # raise so *they* can decide what to do). Called here as a best-effort
+    # step after the account is already committed, so a JTS outage at signup
+    # time (network blip, JTS deployment down, etc.) can't crash the signup
+    # request or block account creation — a wallet-less user just gets
+    # ensure_wallet'd lazily on their first check_sufficient/balance_tokens
+    # call instead.
+    try:
+        from services.token_wallet import ensure_wallet
+        ensure_wallet(db, user)
+    except Exception:
+        logger.exception("JTS ensure_wallet failed at signup for user %s", user.id)
+
     if user.referral_code:
         try:
             affiliates.report_signup(user.id, ref_code=user.referral_code)

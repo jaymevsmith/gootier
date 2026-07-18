@@ -18,6 +18,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from auth import COOKIE_NAME
 from database import Base, get_db
 import models  # noqa: F401 — ensures all models register on Base.metadata
 from models import User
@@ -112,6 +113,62 @@ def test_signup_without_ref_does_not_report_signup(db, client):
 
     assert resp.status_code in (200, 303)
     mock_report.assert_not_called()
+
+
+# ---------------------------------------------------------------- #
+# JTS wallet creation at signup (routes/auth_routes.py signup_submit)
+# ---------------------------------------------------------------- #
+
+def test_signup_creates_jts_wallet(db, client):
+    """signup_submit should call ensure_wallet right after the new user is
+    committed, so the wallet (and trial grant) exists as of signup rather
+    than being created lazily on first AI use.
+
+    get_env and trigger_verification_email are patched out here because
+    _app_url() -> get_env(), and (separately) trigger_verification_email() ->
+    send_email_verification() -> get_env(), each open their own
+    SessionLocal() DB session rather than using the test's overridden get_db
+    dependency — a pre-existing, unrelated issue (same root cause as the 2
+    baseline failures in this file,
+    test_signup_with_ref_stores_code_and_reports_signup /
+    test_signup_without_ref_does_not_report_signup) that is out of scope
+    for this task."""
+    with patch("services.token_wallet.ensure_wallet") as mock_ensure_wallet, \
+         patch.object(auth_routes, "get_env", return_value=""), \
+         patch.object(auth_routes, "trigger_verification_email", return_value=False):
+        resp = _signup_form(client, username="walletuser", email="walletuser@example.com")
+
+    assert resp.status_code in (200, 303)
+    mock_ensure_wallet.assert_called_once()
+    args, kwargs = mock_ensure_wallet.call_args
+    # ensure_wallet(db, user) — second positional arg is the just-created user
+    called_user = args[1] if len(args) > 1 else kwargs.get("user")
+    assert called_user.username == "walletuser"
+
+
+def test_signup_succeeds_even_if_jts_ensure_wallet_raises(db, client):
+    """A JTS outage at signup time (network blip, JTS deployment down, etc.)
+    must not crash the signup request or prevent the account from being
+    created — ensure_wallet is called after the user is already committed,
+    and any failure there is caught and logged so signup still proceeds.
+
+    get_env and trigger_verification_email are patched out for the same
+    unrelated get_env/SessionLocal reason as test_signup_creates_jts_wallet
+    above."""
+    with patch("services.token_wallet.ensure_wallet", side_effect=ConnectionError("boom")) as mock_ensure_wallet, \
+         patch.object(auth_routes, "get_env", return_value=""), \
+         patch.object(auth_routes, "trigger_verification_email", return_value=False):
+        resp = _signup_form(client, username="walletfail", email="walletfail@example.com")
+
+    # Full success, not merely "didn't crash": redirected to /dashboard with
+    # a session cookie set, proving the account was created and the user was
+    # logged in despite ensure_wallet raising. (Note: this test's `client`
+    # fixture uses its own isolated DB/engine, separate from the `db`
+    # fixture, so we verify via the response rather than a `db` query.)
+    assert resp.status_code == 303
+    assert resp.headers["location"] == "/dashboard"
+    assert COOKIE_NAME in resp.cookies
+    mock_ensure_wallet.assert_called_once()
 
 
 # ---------------------------------------------------------------- #
