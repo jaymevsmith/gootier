@@ -569,10 +569,10 @@ async def create_compose_job(
         for ov in (payload.text_overlays or [])
     ]
 
-    # Credit cost: flat 50 for the compose + TTS surcharge if narration set.
-    cost = 50
     tts_endpoint = None
     voice_id = None
+    narration_chars = 0
+    narration_text = None
     if payload.narration_script:
         script = (payload.narration_script or "").strip()
         if len(script) < 4:
@@ -586,10 +586,12 @@ async def create_compose_job(
         tts_endpoint = model["endpoint"]
         voice_map = dict(model["voices"])
         voice_id = voice_map.get(chosen) or list(voice_map.values())[0]
-        cost += int((len(script) / 100) * model["credits_per_100_chars"]) + 1
+        narration_text = script
+        narration_chars = len(script)
 
-    credits_spend(db, user, cost, reason="video_compose",
-                  detail=f"clips={len(ordered_clips)} tts={'yes' if tts_endpoint else 'no'} music={'yes' if payload.music_url else 'no'}")
+    if narration_chars:
+        from services.token_wallet import check_sufficient
+        check_sufficient(db, user, int(narration_chars * 0.00005 * 1_000_000))
 
     job = MediaJob(
         user_id=user.id,
@@ -600,7 +602,6 @@ async def create_compose_job(
         prompt=(payload.narration_script or "")[:500],
         ref_asset_ids=None,
         status="queued",
-        cost_credits=cost,
         compose_meta_json=_json.dumps({
             "source_job_ids": payload.source_job_ids,
             "keep_original_audio": payload.keep_original_audio,
@@ -623,9 +624,10 @@ async def create_compose_job(
     _asyncio.create_task(_run_compose_job(
         job.id, [c.result_url for c in ordered_clips],
         payload.keep_original_audio,
-        payload.narration_script, tts_endpoint, voice_id,
+        narration_text, tts_endpoint, voice_id,
         payload.music_url, user.id, sanitized_opts or None,
         sanitized_trans or None, sanitized_overlays or None,
+        narration_chars,
     ))
 
     log_action(db, user, "CREATE", "MediaJob", str(job.id),
@@ -639,7 +641,8 @@ async def _run_compose_job(job_id: int, clip_urls: list, keep_original: bool,
                             user_id: int,
                             clip_options: Optional[List[dict]] = None,
                             transitions: Optional[List[dict]] = None,
-                            text_overlays: Optional[List[dict]] = None) -> None:
+                            text_overlays: Optional[List[dict]] = None,
+                            narration_chars: int = 0) -> None:
     """Background worker — does the actual ffmpeg + TTS work + DB update."""
     from datetime import datetime as _dt
     from database import SessionLocal
@@ -684,6 +687,14 @@ async def _run_compose_job(job_id: int, clip_urls: list, keep_original: bool,
             job.status = "done"
             job.completed_at = _dt.utcnow()
             db.commit()
+            if narration_chars:
+                from services.token_wallet import debit_after_success
+                user = db.query(User).filter(User.id == user_id).first()
+                debit_after_success(
+                    db, user, model_key="fal-elevenlabs-tts-turbo",
+                    request_id=f"gootier-mediajob-{job.id}",
+                    units=narration_chars,
+                )
             log.info("compose job %s done -> %s", job.id, url)
         finally:
             if tmp_audio_dir:
@@ -694,18 +705,12 @@ async def _run_compose_job(job_id: int, clip_urls: list, keep_original: bool,
         try:
             job = db.query(MediaJob).filter(MediaJob.id == job_id).first()
             if job and job.status != "done":
-                from services.credits import grant as _grant
-                user = db.query(User).filter(User.id == user_id).first()
-                if user and job.cost_credits:
-                    _grant(db, user, job.cost_credits,
-                           reason=f"refund_failed_{job.id}",
-                           detail=f"Auto-refund — compose failed: {e}")
                 job.status = "failed"
                 job.error = str(e)[:1000]
                 job.completed_at = _dt.utcnow()
                 db.commit()
         except Exception:
-            log.exception("refund/finalise also failed for job %s", job_id)
+            log.exception("finalise also failed for job %s", job_id)
     finally:
         db.close()
 
