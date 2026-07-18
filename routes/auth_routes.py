@@ -156,7 +156,8 @@ async def signup_submit(
         from services.token_wallet import ensure_wallet
         ensure_wallet(db, user)
     except Exception:
-        logger.exception("JTS ensure_wallet failed at signup for user %s", user.id)
+        db.rollback()
+        logger.exception("JTS ensure_wallet failed at signup: user=%s", user.id)
 
     if user.referral_code:
         try:
