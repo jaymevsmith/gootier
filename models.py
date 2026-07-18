@@ -41,6 +41,7 @@ class User(Base):
     trial_started_at = Column(DateTime, default=datetime.utcnow)
     subscribed_until = Column(DateTime, nullable=True)
     stripe_customer_id = Column(String, nullable=True)
+    jts_wallet_id = Column(Integer, nullable=True)
     nickname = Column(String, nullable=True)
     reset_token = Column(String, nullable=True, index=True)
     reset_token_expires_at = Column(DateTime, nullable=True)
@@ -117,25 +118,6 @@ class TierConfig(Base):
             return data if isinstance(data, list) else []
         except json.JSONDecodeError:
             return []
-
-
-class TopupPackConfig(Base):
-    """One row per credit pack offered on the billing page.
-
-    Prices are denormalized cents (USD) — they get passed straight into
-    Stripe's inline `price_data` so there's no Stripe Price object to
-    keep in sync.  Admin edits go live the next time /billing is loaded;
-    no app restart needed.
-    """
-    __tablename__ = "topup_pack_configs"
-
-    id = Column(Integer, primary_key=True)
-    key = Column(String, unique=True, nullable=False)   # "pack_500"
-    label = Column(String, nullable=False)              # "Starter — 500 credits"
-    credits = Column(Integer, nullable=False)           # 500
-    price_cents = Column(Integer, nullable=False)       # 500 → $5.00
-    sort_order = Column(Integer, default=0, nullable=False)
-    is_active = Column(Boolean, default=True, nullable=False)
 
 
 class RoleConfig(Base):
@@ -289,21 +271,6 @@ class MediaJob(Base):
     user = relationship("User", backref="media_jobs")
 
 
-class CreditLedger(Base):
-    """Append-only ledger of credit grants and spends. Balance = SUM(delta)."""
-    __tablename__ = "credit_ledger"
-
-    id = Column(Integer, primary_key=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
-    delta = Column(Integer, nullable=False)  # positive=grant, negative=spend
-    reason = Column(String, nullable=False)  # monthly_grant_<tier>, topup_pack_<n>, image_gen, video_gen, refund, admin_adjust
-    media_job_id = Column(Integer, ForeignKey("media_jobs.id"), nullable=True)
-    stripe_session_id = Column(String, nullable=True, index=True)
-    granted_for_month = Column(String, nullable=True, index=True)  # YYYY-MM for monthly_grant rows
-    detail = Column(String, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-
-
 class EnvConfig(Base):
     """Runtime env-var overrides editable from the admin panel.
 
@@ -450,6 +417,7 @@ def _upgrade_users(conn):
     _safe_add_column(conn, "users", "calendar_token",            "VARCHAR")
     _safe_add_column(conn, "users", "google_sub",                "VARCHAR")
     _safe_add_column(conn, "users", "referral_code",             "VARCHAR")
+    _safe_add_column(conn, "users", "jts_wallet_id",             "INTEGER")
 
 
 def _upgrade_social_connections(conn):
@@ -556,33 +524,6 @@ def _seed_tier_configs(db) -> None:
             continue
 
 
-_DEFAULT_TOPUP_PACKS = [
-    # (key, label, credits, price_cents, sort_order)
-    ("pack_500",   "Starter — 500 credits",     500,   500,  10),
-    ("pack_2000",  "Standard — 2,000 credits",  2000,  1500, 20),
-    ("pack_10000", "Pro — 10,000 credits",      10000, 6000, 30),
-]
-
-
-def _seed_topup_packs(db) -> None:
-    """Insert the default credit packs on first boot.  Never overwrites
-    existing rows so admins can rename/reprice/disable packs from
-    /admin/plans without their edits getting reverted on the next deploy."""
-    from sqlalchemy.exc import IntegrityError
-    for key, label, credits, price_cents, sort_order in _DEFAULT_TOPUP_PACKS:
-        try:
-            if db.query(TopupPackConfig).filter(TopupPackConfig.key == key).first():
-                continue
-            db.add(TopupPackConfig(
-                key=key, label=label, credits=credits,
-                price_cents=price_cents, sort_order=sort_order, is_active=True,
-            ))
-            db.commit()
-        except IntegrityError:
-            db.rollback()
-            continue
-
-
 def _seed_env_configs(db) -> None:
     """Ensure a row exists for every KNOWN_ENV_KEYS entry. Doesn't overwrite
     user-edited values. Pulls initial value from os.environ on first seed.
@@ -680,7 +621,6 @@ def init_db() -> None:
         _seed_tier_configs(db)
         _seed_role_configs(db)
         _seed_env_configs(db)
-        _seed_topup_packs(db)
         _encrypt_existing_tokens(db)
     finally:
         db.close()

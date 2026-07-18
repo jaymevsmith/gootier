@@ -10,7 +10,6 @@ from sqlalchemy.orm import Session
 from auth import get_current_user_optional
 from database import get_db
 from models import EmailBlast, MediaJob, SocialConnection, SocialPost, User
-from services.credits import balance as credits_balance
 from services.quotas import usage_summary
 
 router = APIRouter()
@@ -126,7 +125,8 @@ async def dashboard(
         MediaJob.status == "done",
         MediaJob.result_url != None,  # noqa: E711
     ).order_by(MediaJob.completed_at.desc().nullslast()).limit(8).all()
-    credit_balance = credits_balance(db, user)
+    from services.token_wallet import balance_tokens
+    credit_balance = balance_tokens(db, user) // 1000
     return templates.TemplateResponse(request, "dashboard.html", _ctx(
         user,
         connections=connections,
@@ -241,8 +241,8 @@ async def studio_page(
     if not user:
         return RedirectResponse(url="/login", status_code=303)
     from models import MediaJob
-    from services.credits import balance as credits_balance
     from services.media import tts_catalog
+    from services.token_wallet import balance_tokens
     clips = db.query(MediaJob).filter(
         MediaJob.user_id == user.id,
         MediaJob.kind == "video",
@@ -253,7 +253,7 @@ async def studio_page(
     default_model_key = next((k for k, v in cat.items() if v.get("default")), None) or next(iter(cat))
     tts_voices = [v[0] for v in cat[default_model_key]["voices"]] if default_model_key else []
     return templates.TemplateResponse(request, "studio.html", _ctx(
-        user, clips=clips, credit_balance=credits_balance(db, user),
+        user, clips=clips, credit_balance=balance_tokens(db, user) // 1000,
         tts_voices=tts_voices,
     ))
 

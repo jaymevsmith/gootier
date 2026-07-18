@@ -12,7 +12,7 @@ from auth import get_current_user, get_current_user_optional
 from database import get_db
 from models import (
     ActionLog, EmailBlast, EnvConfig, SocialConnection, SocialPost,
-    TierConfig, TopupPackConfig, User, log_action,
+    TierConfig, User, log_action,
 )
 from services.env_config import list_for_admin, set_env
 
@@ -90,7 +90,7 @@ async def admin_plans_page(
     request: Request,
     user: User = Depends(get_current_user_optional),
 ):
-    """Admin editor for the billing page: subscription tiers + credit packs.
+    """Admin editor for the billing page: subscription tiers.
     Everything visible to end users on /billing is editable here."""
     if not user:
         return RedirectResponse(url="/login", status_code=303)
@@ -331,7 +331,7 @@ def _split(csv: str) -> List[str]:
 
 
 # --------------------------------------------------------------------------- #
-# Plans & credit packs API — backs /admin/plans
+# Plans API — backs /admin/plans
 # --------------------------------------------------------------------------- #
 
 class TierQuotas(BaseModel):
@@ -349,24 +349,10 @@ class TierUpdate(BaseModel):
     monthly_price_cents: Optional[int] = None
     stripe_price_id: Optional[str] = None
     yearly_stripe_price_id: Optional[str] = None
-    monthly_credit_grant: Optional[int] = None
     sort_order: Optional[int] = None
     is_active: Optional[bool] = None
     features: Optional[List[str]] = None
     quotas: Optional[TierQuotas] = None
-
-
-class TopupPackUpsert(BaseModel):
-    """Create payload — `key` is required.  Update payload — `key` is the URL param."""
-    label: str
-    credits: int
-    price_cents: int
-    sort_order: Optional[int] = 0
-    is_active: Optional[bool] = True
-
-
-class TopupPackCreate(TopupPackUpsert):
-    key: str
 
 
 _PLANS_VALID_TIERS = ("trial", "bronze", "silver", "gold")
@@ -389,7 +375,6 @@ def _serialize_tier(t: TierConfig, *, user_count: int = 0) -> dict:
         "stripe_price_id": t.stripe_price_id or "",
         "yearly_stripe_price_id": t.yearly_stripe_price_id or "",
         "yearly_price_display": f"${((t.monthly_price_cents or 0) * 10) / 100:.2f}",
-        "monthly_credit_grant": int(t.monthly_credit_grant or 0),
         "features": t.features_list(),
         "sort_order": int(t.sort_order or 0),
         "is_active": bool(t.is_active if t.is_active is not None else True),
@@ -399,18 +384,6 @@ def _serialize_tier(t: TierConfig, *, user_count: int = 0) -> dict:
         # Number of users currently on this tier — admin needs to see who
         # they're about to affect before lowering a quota.
         "user_count": user_count,
-    }
-
-
-def _serialize_pack(p: TopupPackConfig) -> dict:
-    return {
-        "key": p.key,
-        "label": p.label,
-        "credits": p.credits,
-        "price_cents": p.price_cents,
-        "price_display": f"${p.price_cents / 100:.2f}",
-        "sort_order": p.sort_order or 0,
-        "is_active": bool(p.is_active),
     }
 
 
@@ -463,9 +436,6 @@ async def update_tier(
     if payload.yearly_stripe_price_id is not None:
         row.yearly_stripe_price_id = payload.yearly_stripe_price_id.strip()[:120] or None
         changed.append("yearly_stripe_price_id")
-    if payload.monthly_credit_grant is not None:
-        row.monthly_credit_grant = max(0, int(payload.monthly_credit_grant))
-        changed.append("monthly_credit_grant")
     if payload.sort_order is not None:
         row.sort_order = int(payload.sort_order)
         changed.append("sort_order")
@@ -502,73 +472,3 @@ async def update_tier(
         .count()
     )
     return _serialize_tier(row, user_count=user_count)
-
-
-@router.get("/api/admin/topup-packs")
-async def list_packs(
-    db: Session = Depends(get_db),
-    _admin: User = Depends(require_admin),
-):
-    rows = db.query(TopupPackConfig).order_by(TopupPackConfig.sort_order.asc(), TopupPackConfig.label.asc()).all()
-    return {"packs": [_serialize_pack(r) for r in rows]}
-
-
-@router.post("/api/admin/topup-packs")
-async def create_pack(
-    payload: TopupPackCreate,
-    db: Session = Depends(get_db),
-    admin: User = Depends(require_admin),
-):
-    key = (payload.key or "").strip()
-    if not key or not key.replace("_", "").isalnum():
-        raise HTTPException(status_code=400, detail="key must be alphanumeric / underscore only")
-    if db.query(TopupPackConfig).filter(TopupPackConfig.key == key).first():
-        raise HTTPException(status_code=409, detail=f"Pack '{key}' already exists")
-    row = TopupPackConfig(
-        key=key,
-        label=payload.label.strip()[:120],
-        credits=max(1, int(payload.credits)),
-        price_cents=max(0, int(payload.price_cents)),
-        sort_order=int(payload.sort_order or 0),
-        is_active=bool(payload.is_active),
-    )
-    db.add(row); db.commit(); db.refresh(row)
-    log_action(db, admin, "CREATE", "TopupPackConfig", key, detail=f"{row.credits} credits @ ${row.price_cents/100:.2f}")
-    return _serialize_pack(row)
-
-
-@router.patch("/api/admin/topup-packs/{pack_key}")
-async def update_pack(
-    pack_key: str,
-    payload: TopupPackUpsert,
-    db: Session = Depends(get_db),
-    admin: User = Depends(require_admin),
-):
-    row = db.query(TopupPackConfig).filter(TopupPackConfig.key == pack_key).first()
-    if not row:
-        raise HTTPException(status_code=404, detail=f"Pack not found: {pack_key}")
-    row.label = payload.label.strip()[:120]
-    row.credits = max(1, int(payload.credits))
-    row.price_cents = max(0, int(payload.price_cents))
-    if payload.sort_order is not None:
-        row.sort_order = int(payload.sort_order)
-    if payload.is_active is not None:
-        row.is_active = bool(payload.is_active)
-    db.commit()
-    log_action(db, admin, "UPDATE", "TopupPackConfig", pack_key,
-               detail=f"{row.credits} credits @ ${row.price_cents/100:.2f}")
-    return _serialize_pack(row)
-
-
-@router.delete("/api/admin/topup-packs/{pack_key}")
-async def delete_pack(
-    pack_key: str,
-    db: Session = Depends(get_db),
-    admin: User = Depends(require_admin),
-):
-    row = db.query(TopupPackConfig).filter(TopupPackConfig.key == pack_key).first()
-    if not row:
-        raise HTTPException(status_code=404, detail=f"Pack not found: {pack_key}")
-    db.delete(row); db.commit()
-    log_action(db, admin, "DELETE", "TopupPackConfig", pack_key)
-    return {"deleted": pack_key}

@@ -71,7 +71,6 @@
     <div id="media-section" class="mb-3 d-none">
       <hr>
       <h6 class="mb-3"><i class="fas fa-images me-2 text-muted"></i>AI-generated media (optional)</h6>
-      <div id="media-balance" class="small-meta mb-3"></div>
       <div class="row g-3 mb-3">
         <div class="col-md-6">
           <div class="form-check form-switch">
@@ -100,7 +99,6 @@
         <label class="form-label">Reference image for AI-generated videos</label>
         <div id="media-video-asset-picker" class="d-flex gap-2 flex-wrap">Loading…</div>
       </div>
-      <div id="media-cost-summary" class="alert alert-secondary py-2 mt-3 mb-0 small d-none"></div>
     </div>
 
     <button id="schedule-btn" class="btn tj-grad-btn">
@@ -179,26 +177,19 @@ function updateMediaCost() {
   const vidItems = lastItems.filter(i => i.kind === 'social_post' && i.video_prompt);
 
   document.getElementById('media-images-cost').textContent =
-    `${imgItems.length} item(s) want images · ${imgModel?.credits || 0} cr each · ${imgModel?.label || '—'}`;
+    `${imgItems.length} item(s) want images · ${imgModel?.label || '—'}`;
   document.getElementById('media-videos-cost').textContent =
-    `${vidItems.length} item(s) want videos · ${vidModel?.credits || 0} cr each · ${vidModel?.label || '—'}`;
+    `${vidItems.length} item(s) want videos · ${vidModel?.label || '—'}`;
 
   document.getElementById('media-image-pick').classList.toggle('d-none', !(genImg && imgItems.length));
   document.getElementById('media-video-pick').classList.toggle('d-none', !(genVid && vidItems.length));
 
-  const total = (genImg ? (imgItems.length * (imgModel?.credits || 0)) : 0)
-              + (genVid ? (vidItems.length * (vidModel?.credits || 0)) : 0);
-  const summary = document.getElementById('media-cost-summary');
-  if (total > 0) {
-    const bal = mediaCatalogState.balance;
-    summary.classList.remove('d-none');
-    summary.classList.toggle('alert-warning', bal < total);
-    summary.classList.toggle('alert-secondary', bal >= total);
-    summary.innerHTML = `Total media cost: <strong>${total} credits</strong> · Balance: ${bal}` +
-      (bal < total ? ` · <strong>Not enough — top up at <a href="/billing">/billing</a></strong>` : '');
-  } else {
-    summary.classList.add('d-none');
-  }
+  // Token cost is enforced server-side against the real JTS balance at
+  // schedule time (see services/token_wallet.check_sufficient) — there's no
+  // cheap way to mirror that exact figure client-side, so we don't show a
+  // pre-flight cost/balance comparison here. A generation that can't be
+  // afforded is rejected by the server with a clear "Insufficient tokens"
+  // message instead.
 }
 
 document.getElementById('media-gen-images').addEventListener('change', () => {
@@ -265,8 +256,6 @@ document.getElementById('ai-form').addEventListener('submit', async (e) => {
   if (hasSocial) await loadConnections();
   if (anyImagePrompts || anyVideoPrompts) {
     await loadMediaCatalog();
-    document.getElementById('media-balance').innerHTML =
-      `Current credit balance: <strong>${mediaCatalogState?.balance ?? '—'}</strong>`;
     updateMediaCost();
   }
   document.getElementById('ai-results').scrollIntoView({ behavior: 'smooth', block: 'start' });
