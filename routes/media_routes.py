@@ -368,6 +368,17 @@ async def get_media_job(
             job.status = "done"
             job.completed_at = datetime.utcnow()
             db.commit()
+            from services.media import JTS_RATE_KEY
+            from services.token_wallet import debit_after_success
+            if job.kind == "video":
+                units = float(job.duration_seconds or 5)
+            else:
+                units = 1
+            debit_after_success(
+                db, user, model_key=JTS_RATE_KEY[job.model_key],
+                request_id=f"gootier-mediajob-{job.id}",
+                units=units,
+            )
             log_action(db, user, "UPDATE", "MediaJob", str(job.id), detail="completed")
         except Exception as e:
             _mark_failed(db, user, job, f"result fetch failed: {e}")
