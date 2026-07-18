@@ -10,12 +10,8 @@ from sqlalchemy.orm import Session
 
 from auth import get_current_user
 from database import get_db
-from models import CreditLedger, TierConfig, User, log_action
+from models import TierConfig, User, log_action
 from services.affiliates import affiliates
-from services.credits import (
-    balance as credits_balance, get_topup_pack, grant as credits_grant,
-    list_topup_packs, recent_history as credits_history,
-)
 from services.env_config import get_env
 
 logger = logging.getLogger("gootier.stripe")
@@ -116,14 +112,16 @@ async def billing_page(
     tiers_view = _load_billing_tiers(db)
     for t in tiers_view:
         t["current"] = (user.tier == t["key"])
+    from services.token_wallet import balance_tokens
+    from services.env_config import get_env
     return templates.TemplateResponse(request, "billing.html", {
         "user": user,
         "tiers": tiers_view,
         "stripe_configured": bool(_stripe_secret()),
         "has_subscription": bool(user.stripe_customer_id),
-        "credit_balance": credits_balance(db, user),
-        "credit_history": credits_history(db, user, limit=20),
-        "topup_packs": list_topup_packs(db),
+        "token_balance_display": balance_tokens(db, user) // 1000,
+        "token_service_url": get_env("TOKEN_SERVICE_URL", "https://jhome-token-service-production.up.railway.app"),
+        "token_service_app_slug": "gootier",
     })
 
 
@@ -227,58 +225,36 @@ async def create_checkout_session(
     return {"url": session.url}
 
 
-@router.post("/api/billing/credits/checkout")
-async def create_credits_checkout(
+@router.post("/api/billing/tokens/checkout")
+async def create_tokens_checkout(
+    payload: dict,
     request: Request,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """One-off Stripe Checkout for a credit pack (mode='payment', no recurring)."""
-    _ensure_stripe_key()
-    body = await request.json()
-    pack_key = body.get("pack_key")
-    pack = get_topup_pack(db, pack_key)
-    if not pack:
-        raise HTTPException(status_code=400, detail=f"Unknown credit pack: {pack_key!r}")
+    from services.token_wallet import ensure_wallet
+    wallet_id = ensure_wallet(db, user)
+    bundle_name = payload.get("bundle_name")
+    if not bundle_name:
+        raise HTTPException(status_code=400, detail="bundle_name is required")
 
-    try:
-        session = stripe.checkout.Session.create(
-            mode="payment",
-            line_items=[{
-                "price_data": {
-                    "currency": "usd",
-                    "unit_amount": pack["price_cents"],
-                    "product_data": {
-                        "name": pack["label"],
-                        "description": f"{pack['credits']} Gootier credits — never expires.",
-                    },
-                },
-                "quantity": 1,
-            }],
-            customer=user.stripe_customer_id or None,
-            customer_email=None if user.stripe_customer_id else user.email,
-            client_reference_id=str(user.id),
-            metadata={
-                "user_id": str(user.id),
-                "kind": "credit_pack",
-                "pack_key": pack["key"],
-                "credits": str(pack["credits"]),
-            },
-            payment_intent_data={
-                "metadata": {
-                    "user_id": str(user.id),
-                    "kind": "credit_pack",
-                    "pack_key": pack["key"],
-                    "credits": str(pack["credits"]),
-                },
-            },
-            success_url=f"{_app_url()}/billing?credits_added=1",
-            cancel_url=f"{_app_url()}/billing?credits_cancelled=1",
-        )
-    except stripe.error.StripeError as e:
-        raise HTTPException(status_code=502, detail=str(e))
-
-    return {"url": session.url}
+    import httpx
+    from services.env_config import get_env
+    base_url = get_env("TOKEN_SERVICE_URL", "https://jhome-token-service-production.up.railway.app")
+    resp = httpx.post(
+        f"{base_url}/checkout",
+        headers={"X-API-Key": get_env("TOKEN_SERVICE_API_KEY", "")},
+        json={
+            "wallet_id": wallet_id,
+            "bundle_name": bundle_name,
+            "success_url": f"{_app_url()}/billing?credits_added=1",
+            "cancel_url": f"{_app_url()}/billing?credits_cancelled=1",
+        },
+        timeout=10,
+    )
+    if resp.status_code != 200:
+        raise HTTPException(status_code=502, detail="Could not start checkout")
+    return {"checkout_url": resp.json()["checkout_url"]}
 
 
 @router.post("/api/billing/portal")
@@ -315,13 +291,10 @@ async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
     obj = event["data"]["object"]
 
     if etype == "checkout.session.completed":
-        # Branch on mode — credit packs use mode=payment, plans use mode=subscription.
-        mode = obj.get("mode")
-        metadata = obj.get("metadata") or {}
-        if mode == "payment" or metadata.get("kind") == "credit_pack":
-            _handle_topup_completed(db, obj)
-        else:
-            _handle_checkout_completed(db, obj)
+        # Token-pack purchases now go through JTS's own checkout + webhook
+        # entirely out of band — this handler only needs to cover Gootier's
+        # own tier-subscription checkout (mode=subscription).
+        _handle_checkout_completed(db, obj)
     elif etype == "customer.subscription.updated":
         _handle_subscription_updated(db, obj)
     elif etype == "customer.subscription.deleted":
@@ -330,49 +303,6 @@ async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
         _handle_charge_refunded(db, obj)
 
     return JSONResponse({"received": True})
-
-
-def _handle_topup_completed(db: Session, session_obj: dict) -> None:
-    metadata = session_obj.get("metadata") or {}
-    user = _resolve_user(
-        db,
-        customer_id=session_obj.get("customer", "") or "",
-        user_id_str=metadata.get("user_id", "") or session_obj.get("client_reference_id", "") or "",
-    )
-    if not user:
-        return
-
-    credits_str = (metadata.get("credits") or "").strip()
-    if not credits_str.isdigit():
-        return
-    credits = int(credits_str)
-    if credits <= 0:
-        return
-
-    session_id = session_obj.get("id") or ""
-    if session_id:
-        already = db.query(CreditLedger).filter(
-            CreditLedger.stripe_session_id == session_id,
-        ).first()
-        if already:
-            return  # idempotency — webhook re-delivery
-
-    if session_obj.get("customer") and not user.stripe_customer_id:
-        user.stripe_customer_id = session_obj["customer"]
-
-    pack_key = metadata.get("pack_key", "topup")
-    credits_grant(
-        db, user, credits,
-        reason=f"topup_{pack_key}",
-        stripe_session_id=session_id,
-        detail=f"Top-up via Stripe Checkout: {credits} credits ({pack_key})",
-    )
-    log_action(db, user, "TOPUP", "User", str(user.id),
-               detail=f"+{credits} credits via {pack_key}")
-
-    amount_total = session_obj.get("amount_total")
-    if amount_total is not None:
-        affiliates.report_payment(user.id, amount_total, session_id or f"topup-{user.id}")
 
 
 def _resolve_user(db: Session, customer_id: str = "", user_id_str: str = "") -> Optional[User]:
