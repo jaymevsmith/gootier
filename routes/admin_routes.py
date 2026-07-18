@@ -90,7 +90,7 @@ async def admin_plans_page(
     request: Request,
     user: User = Depends(get_current_user_optional),
 ):
-    """Admin editor for the billing page: subscription tiers + credit packs.
+    """Admin editor for the billing page: subscription tiers.
     Everything visible to end users on /billing is editable here."""
     if not user:
         return RedirectResponse(url="/login", status_code=303)
