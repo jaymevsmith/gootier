@@ -107,6 +107,7 @@ JTS_RATE_KEY = {
     "kling-2.1-pro":    "fal-kling-2.1-pro",
     "veo-3.1":          "fal-veo-3.1",
     "veo-3.1-fast":     "fal-veo-3.1-fast",
+    "eleven-turbo":     "fal-elevenlabs-tts-turbo",
 }
 
 # Real USD price per unit, mirrored from the same script — used only for the
@@ -120,6 +121,7 @@ JTS_PRICE_PER_UNIT_USD = {
     "kling-2.1-pro":    0.098,
     "veo-3.1":          0.40,
     "veo-3.1-fast":     0.15,
+    "eleven-turbo":     0.00005,
 }
 
 

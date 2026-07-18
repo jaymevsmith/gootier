@@ -590,8 +590,9 @@ async def create_compose_job(
         narration_chars = len(script)
 
     if narration_chars:
+        from services.media import estimate_tokens
         from services.token_wallet import check_sufficient
-        check_sufficient(db, user, int(narration_chars * 0.00005 * 1_000_000))
+        check_sufficient(db, user, estimate_tokens("eleven-turbo", units=narration_chars))
 
     job = MediaJob(
         user_id=user.id,
@@ -688,10 +689,11 @@ async def _run_compose_job(job_id: int, clip_urls: list, keep_original: bool,
             job.completed_at = _dt.utcnow()
             db.commit()
             if narration_chars:
+                from services.media import JTS_RATE_KEY
                 from services.token_wallet import debit_after_success
                 user = db.query(User).filter(User.id == user_id).first()
                 debit_after_success(
-                    db, user, model_key="fal-elevenlabs-tts-turbo",
+                    db, user, model_key=JTS_RATE_KEY["eleven-turbo"],
                     request_id=f"gootier-mediajob-{job.id}",
                     units=narration_chars,
                 )
