@@ -497,7 +497,7 @@ def _tt_redirect() -> str:
 TT_AUTHORIZE = "https://www.tiktok.com/v2/auth/authorize/"
 TT_TOKEN     = "https://open.tiktokapis.com/v2/oauth/token/"
 TT_USERINFO  = "https://open.tiktokapis.com/v2/user/info/"
-TT_SCOPES    = "user.info.basic,video.publish,video.upload"
+TT_SCOPES    = "user.info.basic,video.upload"
 
 
 @router.get("/tiktok/start")
