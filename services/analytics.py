@@ -101,36 +101,6 @@ async def fetch_instagram_metrics(conn: SocialConnection, media_id: str) -> Opti
         return None
 
 
-async def fetch_twitter_metrics(conn: SocialConnection, tweet_id: str) -> Optional[Dict]:
-    headers = {"Authorization": f"Bearer {conn.access_token}"}
-    params = {"tweet.fields": "public_metrics"}
-    try:
-        async with httpx.AsyncClient(timeout=20.0) as client:
-            resp = await client.get(f"https://api.twitter.com/2/tweets/{tweet_id}",
-                                     headers=headers, params=params)
-            if resp.status_code >= 400:
-                return None
-            data = (resp.json().get("data") or {}).get("public_metrics") or {}
-            return {
-                "platform": "twitter", "fetched_at": _now_iso(),
-                "impressions": int(data.get("impression_count", 0) or 0),
-                "reach": 0,
-                "engagement": int(data.get("like_count", 0) or 0)
-                              + int(data.get("reply_count", 0) or 0)
-                              + int(data.get("retweet_count", 0) or 0)
-                              + int(data.get("quote_count", 0) or 0),
-                "likes": int(data.get("like_count", 0) or 0),
-                "comments": int(data.get("reply_count", 0) or 0),
-                "shares": int(data.get("retweet_count", 0) or 0)
-                          + int(data.get("quote_count", 0) or 0),
-                "video_views": 0,
-                "raw": data,
-            }
-    except Exception as e:
-        logger.warning("X metrics fetch failed for %s: %s", tweet_id, e)
-        return None
-
-
 async def fetch_linkedin_metrics(conn: SocialConnection, ugc_urn: str) -> Optional[Dict]:
     """LinkedIn /v2/socialActions/{share-urn} returns counts."""
     if not ugc_urn:
@@ -194,8 +164,6 @@ async def fetch_post_metrics(db: Session, post: SocialPost) -> Dict:
             metrics = await fetch_facebook_metrics(conn, post_id)
         elif conn.platform == "instagram":
             metrics = await fetch_instagram_metrics(conn, post_id)
-        elif conn.platform == "twitter":
-            metrics = await fetch_twitter_metrics(conn, post_id)
         elif conn.platform == "linkedin":
             metrics = await fetch_linkedin_metrics(conn, post_id)
         else:

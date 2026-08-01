@@ -156,7 +156,6 @@ async def connections_page(
     from services.env_config import get_env
     platform_status = {
         "meta_configured":     bool(get_env("META_APP_ID")),
-        "twitter_configured":  bool(get_env("X_CLIENT_ID")),
         "linkedin_configured": bool(get_env("LINKEDIN_CLIENT_ID")),
         "tiktok_configured":   bool(get_env("TIKTOK_CLIENT_KEY")),
         "youtube_configured":  bool(get_env("YOUTUBE_CLIENT_ID")),

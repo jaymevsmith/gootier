@@ -2,7 +2,7 @@
 
 The OAuth flows in Gootier work end-to-end in code, but every platform gates the **write** scopes behind a review process before any user outside your developer-app team can grant them. This doc captures what's needed for each platform, what the review actually asks for, and the rough timeline to plan around.
 
-Run order if you're shipping to real customers: **Meta first** (FB + IG, longest review), **LinkedIn** in parallel, **X** when you're ready to pay the API tier, **TikTok** last (audit + privacy gate are the most opinionated).
+Run order if you're shipping to real customers: **Meta first** (FB + IG, longest review), **LinkedIn** in parallel, **TikTok** last (audit + privacy gate are the most opinionated).
 
 ---
 
@@ -84,50 +84,7 @@ The flow works for the developer app owner (you) only. You can hand-add **Verifi
 
 ---
 
-## 3. X (Twitter)
-
-The hardest gate isn't review — it's the **paid API tier**.
-
-### Pricing reality
-
-- **Free tier**: read-only. The `tweet.write` scope literally doesn't work.
-- **Basic tier**: **$200/month**. Required for `tweet.write`. 100 reads + 100 writes per 24h per user is the rate limit at writeup-time.
-- **Pro tier**: $5,000/month. Higher rate limits + access to v2 streaming endpoints.
-
-If your customer base is < 30 active users posting daily, Basic is fine — you'll burn through writes well within the limit.
-
-### Permissions to request
-
-- `tweet.write` — post tweets
-- `tweet.read` — read tweet content (needed for the analytics panel)
-- `users.read` — get the authenticated user's handle
-- `offline.access` — get a refresh token (otherwise the access token expires in 2 hours)
-
-### Setup steps
-
-1. Sign up at **developer.x.com** for a Basic-tier project.
-2. Inside the project, create an **OAuth 2.0** app (not OAuth 1.0a — that's the older flow with bearer tokens).
-3. Set the **Type of App** to "Web App, Automated App or Bot" and **Confidential Client**.
-4. Set the **Callback URL** to `https://gootier-prod.up.railway.app/oauth/twitter/callback`.
-5. Set the **Website URL** to your marketing site.
-6. Copy the Client ID + Client Secret → `/admin/env` → `X_CLIENT_ID`, `X_CLIENT_SECRET`.
-7. Under **App Settings → User Authentication Settings**, enable: `tweet.read`, `tweet.write`, `users.read`, `offline.access`.
-
-### No review process
-
-Unlike Meta and LinkedIn, X **doesn't review your app** before users can grant scopes. Once you're paying for Basic tier and the OAuth config is right, real users can connect immediately.
-
-### Media uploads caveat
-
-Image and video tweets go through X's v1.1 media upload endpoint (`upload.twitter.com/1.1/media/upload.json`), which uses OAuth 1.0a + chunked uploads. Gootier ships **text-only tweets** in MVP — wiring full media upload is a separate ~200 lines including the chunked init/append/finalize dance.
-
-### Until paid
-
-The Free tier OAuth flow completes successfully, the connection is saved, but every `tweet.write` call returns `403 — you currently have access to a subset of Twitter API V2 endpoints and limited V1.1 endpoints only`. Tell pilot users.
-
----
-
-## 4. TikTok (Content Posting API)
+## 3. TikTok (Content Posting API)
 
 TikTok's flow has the most opinionated UX requirements of any platform here. Read carefully — the publish behavior is fundamentally different from the others.
 
@@ -189,7 +146,6 @@ For Gootier on Railway, the production redirect URIs are:
 | Platform | Redirect URI |
 |---|---|
 | Facebook + Instagram | `https://gootier-prod.up.railway.app/oauth/facebook/callback` |
-| X | `https://gootier-prod.up.railway.app/oauth/twitter/callback` |
 | LinkedIn | `https://gootier-prod.up.railway.app/oauth/linkedin/callback` |
 | TikTok | `https://gootier-prod.up.railway.app/oauth/tiktok/callback` |
 
@@ -203,13 +159,13 @@ If you start today with no business verification and no dev apps registered:
 
 | Day | What's possible |
 |---|---|
-| Day 0-3 | All four dev apps registered, Gootier OAuth flows work for you + handpicked testers, fully testable end-to-end |
-| Week 1-2 | LinkedIn application submitted, Meta business verification kicked off, X Basic tier active and real users can connect, TikTok sandbox connected for any TikTok user you list as a tester |
+| Day 0-3 | All three dev apps registered, Gootier OAuth flows work for you + handpicked testers, fully testable end-to-end |
+| Week 1-2 | LinkedIn application submitted, Meta business verification kicked off, TikTok sandbox connected for any TikTok user you list as a tester |
 | Week 3-6 | LinkedIn approved (typical), Meta first-round response (usually a revision ask) |
 | Week 6-10 | Meta approved after revision, TikTok audit response |
-| Week 10+ | All four platforms fully open to any customer who signs up |
+| Week 10+ | All three platforms fully open to any customer who signs up |
 
-Plan customer-facing launch for **6-10 weeks out** if you want all four platforms unblocked at GA. Or launch with Facebook + LinkedIn only and add IG/X/TikTok as their approvals land — Gootier's per-platform connect cards already gray out when a platform isn't configured, so this gating is a per-env-var concern, not a code release.
+Plan customer-facing launch for **6-10 weeks out** if you want all three platforms unblocked at GA. Or launch with Facebook + LinkedIn only and add IG/TikTok as their approvals land — Gootier's per-platform connect cards already gray out when a platform isn't configured, so this gating is a per-env-var concern, not a code release.
 
 ---
 

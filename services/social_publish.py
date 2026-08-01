@@ -119,37 +119,6 @@ async def publish_instagram(conn: SocialConnection, content: str,
         return {"success": False, "error": str(e), "platform": "instagram"}
 
 
-async def publish_twitter(conn: SocialConnection, content: str,
-                            link_url: Optional[str] = None) -> Dict:
-    """Post a tweet via X API v2 (text only for MVP; media via v1.1 not wired yet)."""
-    text = content
-    if link_url:
-        text = f"{content}\n\n{link_url}".strip()
-    if len(text) > 280:
-        text = text[:277] + "…"
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.post(
-                "https://api.twitter.com/2/tweets",
-                headers={
-                    "Authorization": f"Bearer {conn.access_token}",
-                    "Content-Type": "application/json",
-                },
-                content=json.dumps({"text": text}),
-            )
-            resp.raise_for_status()
-            payload = resp.json().get("data") or {}
-            return {
-                "success": True,
-                "post_id": payload.get("id"),
-                "platform": "twitter",
-            }
-    except httpx.HTTPStatusError as e:
-        return {"success": False, "error": e.response.text, "platform": "twitter"}
-    except Exception as e:
-        return {"success": False, "error": str(e), "platform": "twitter"}
-
-
 async def publish_linkedin(conn: SocialConnection, content: str,
                              link_url: Optional[str] = None,
                              image_url: Optional[str] = None) -> Dict:
@@ -373,8 +342,6 @@ async def publish_to_connections(connections: List[SocialConnection], content: s
             results[conn.id] = await publish_instagram(
                 conn, content, image_url=image_url, video_url=video_url,
             )
-        elif conn.platform == "twitter":
-            results[conn.id] = await publish_twitter(conn, content, link_url=link_url)
         elif conn.platform == "linkedin":
             results[conn.id] = await publish_linkedin(
                 conn, content, link_url=link_url, image_url=image_url,

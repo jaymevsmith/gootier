@@ -15,7 +15,6 @@
 {% set platform_meta = {
   'facebook':  {'icon': 'fab fa-facebook',  'color': '#1877f2', 'label': 'Facebook Page'},
   'instagram': {'icon': 'fab fa-instagram', 'color': '#E1306C', 'label': 'Instagram'},
-  'twitter':   {'icon': 'fab fa-x-twitter', 'color': '#000000', 'label': 'X (Twitter)'},
   'linkedin':  {'icon': 'fab fa-linkedin',  'color': '#0A66C2', 'label': 'LinkedIn'},
   'tiktok':    {'icon': 'fab fa-tiktok',    'color': '#000000', 'label': 'TikTok'},
   'youtube':   {'icon': 'fab fa-youtube',   'color': '#FF0000', 'label': 'YouTube'},
@@ -25,7 +24,6 @@
   {% for p in [
     ('facebook',  'meta_configured',     '/oauth/facebook/start', None),
     ('instagram', 'meta_configured',     '/oauth/facebook/start', 'Connects together with Facebook (one Meta app).'),
-    ('twitter',   'twitter_configured',  '/oauth/twitter/start',  'Requires X API Basic tier ($200/mo) for write access.'),
     ('linkedin',  'linkedin_configured', '/oauth/linkedin/start', None),
     ('tiktok',    'tiktok_configured',   '/oauth/tiktok/start',   'TikTok posts land in the in-app inbox for the user to publish from the TikTok app.'),
     ('youtube',   'youtube_configured',  '/oauth/youtube/start',  'Video-only — posts without a video attached skip this channel.'),

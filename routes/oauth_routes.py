@@ -1,7 +1,7 @@
 """OAuth-based social-account connections.
 
 One connect-via-login flow per platform. State is HMAC-signed and binds the
-authenticated session to the callback. PKCE-using flows (X, TikTok) carry
+authenticated session to the callback. PKCE-using flows (TikTok) carry
 the code_verifier inside the state so we don't need a session store.
 """
 import base64
@@ -247,108 +247,6 @@ async def facebook_callback(
     if len(ig_targets): bits.append(f"{len(ig_targets)} Instagram account" + ("s" if len(ig_targets) != 1 else ""))
     response = RedirectResponse(url="/connections", status_code=303)
     set_flash(response, "success", "Connected: " + (", ".join(bits) or "(no accounts found)"))
-    return response
-
-
-# --------------------------------------------------------------------------- #
-# X (Twitter) — OAuth 2.0 with PKCE
-# --------------------------------------------------------------------------- #
-
-def _x_client_id() -> str:     return get_env("X_CLIENT_ID", "")
-def _x_client_secret() -> str: return get_env("X_CLIENT_SECRET", "")
-def _x_redirect() -> str:
-    return get_env("X_OAUTH_REDIRECT", "http://localhost:8000/oauth/twitter/callback")
-
-X_AUTHORIZE = "https://twitter.com/i/oauth2/authorize"
-X_TOKEN     = "https://api.twitter.com/2/oauth2/token"
-X_ME        = "https://api.twitter.com/2/users/me"
-X_SCOPES    = "tweet.write tweet.read users.read offline.access"
-
-
-@router.get("/twitter/start")
-async def twitter_start(user: User = Depends(get_current_user)):
-    if not _x_client_id():
-        raise HTTPException(status_code=503, detail="X (Twitter) OAuth is not configured")
-    verifier, challenge = _pkce_pair()
-    params = {
-        "response_type": "code",
-        "client_id": _x_client_id(),
-        "redirect_uri": _x_redirect(),
-        "scope": X_SCOPES,
-        "state": _sign_state(user.id, verifier),
-        "code_challenge": challenge,
-        "code_challenge_method": "S256",
-    }
-    return RedirectResponse(url=f"{X_AUTHORIZE}?{urlencode(params)}", status_code=303)
-
-
-@router.get("/twitter/callback")
-async def twitter_callback(
-    code: str = "",
-    state: str = "",
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    if not code:
-        raise HTTPException(status_code=400, detail="Missing OAuth code")
-    verifier = _verify_state(state, user.id)
-    if verifier is None:
-        raise HTTPException(status_code=400, detail="Invalid or forged OAuth state")
-
-    auth_b64 = base64.b64encode(f"{_x_client_id()}:{_x_client_secret()}".encode()).decode()
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        token_resp = await client.post(
-            X_TOKEN,
-            headers={
-                "Authorization": f"Basic {auth_b64}",
-                "Content-Type": "application/x-www-form-urlencoded",
-            },
-            data={
-                "grant_type": "authorization_code",
-                "code": code,
-                "redirect_uri": _x_redirect(),
-                "client_id": _x_client_id(),
-                "code_verifier": verifier,
-            },
-        )
-        if token_resp.status_code >= 400:
-            raise HTTPException(status_code=502, detail=f"X token exchange failed: {token_resp.text}")
-        token_data = token_resp.json()
-        access_token = token_data.get("access_token")
-        refresh_token = token_data.get("refresh_token")
-        if not access_token:
-            raise HTTPException(status_code=502, detail="No access_token from X")
-
-        me_resp = await client.get(X_ME, headers={"Authorization": f"Bearer {access_token}"})
-        me = (me_resp.json().get("data") or {}) if me_resp.status_code < 400 else {}
-        x_id = me.get("id") or "unknown"
-        username = me.get("username") or x_id
-
-    _check_connection_quota(db, user, 1)
-
-    existing = db.query(SocialConnection).filter(
-        SocialConnection.user_id == user.id,
-        SocialConnection.platform == "twitter",
-        SocialConnection.page_id == x_id,
-    ).first()
-    if existing:
-        existing.access_token = access_token
-        existing.refresh_token = refresh_token
-        existing.account_name = f"@{username}"
-        existing.is_active = True
-    else:
-        db.add(SocialConnection(
-            user_id=user.id, platform="twitter",
-            account_name=f"@{username}",
-            access_token=access_token, refresh_token=refresh_token,
-            page_id=x_id, is_active=True,
-        ))
-
-    db.commit()
-    log_action(db, user, "CREATE", "SocialConnection",
-               detail=f"X OAuth — connected @{username}")
-    response = RedirectResponse(url="/connections", status_code=303)
-    set_flash(response, "success", f"Connected X account @{username}.")
     return response
 
 

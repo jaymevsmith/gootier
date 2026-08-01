@@ -363,10 +363,6 @@ KNOWN_ENV_KEYS = [
     ("META_APP_SECRET",        "social",  True,  False, "Facebook/Meta developer app secret."),
     ("META_OAUTH_REDIRECT",    "social",  False, False, "Facebook OAuth redirect URI registered with Meta. Must match exactly."),
 
-    ("X_CLIENT_ID",            "social",  False, False, "X (Twitter) OAuth 2.0 client ID. Requires the paid Basic tier or higher for write access."),
-    ("X_CLIENT_SECRET",        "social",  True,  False, "X (Twitter) OAuth 2.0 client secret."),
-    ("X_OAUTH_REDIRECT",       "social",  False, False, "X OAuth redirect URI, e.g. https://yourhost/oauth/twitter/callback"),
-
     ("LINKEDIN_CLIENT_ID",     "social",  False, False, "LinkedIn OAuth 2.0 client ID."),
     ("LINKEDIN_CLIENT_SECRET", "social",  True,  False, "LinkedIn OAuth 2.0 client secret."),
     ("LINKEDIN_OAUTH_REDIRECT","social",  False, False, "LinkedIn OAuth redirect URI, e.g. https://yourhost/oauth/linkedin/callback"),
