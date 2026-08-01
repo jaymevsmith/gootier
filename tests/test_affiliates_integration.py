@@ -18,6 +18,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from auth import COOKIE_NAME
 from database import Base, get_db
 import models  # noqa: F401 — ensures all models register on Base.metadata
 from models import User
@@ -115,6 +116,118 @@ def test_signup_without_ref_does_not_report_signup(db, client):
 
 
 # ---------------------------------------------------------------- #
+# JTS wallet creation at signup (routes/auth_routes.py signup_submit)
+# ---------------------------------------------------------------- #
+
+def test_signup_creates_jts_wallet(db, client):
+    """signup_submit should call ensure_wallet right after the new user is
+    committed, so the wallet (and trial grant) exists as of signup rather
+    than being created lazily on first AI use.
+
+    get_env and trigger_verification_email are patched out here because
+    _app_url() -> get_env(), and (separately) trigger_verification_email() ->
+    send_email_verification() -> get_env(), each open their own
+    SessionLocal() DB session rather than using the test's overridden get_db
+    dependency — a pre-existing, unrelated issue (same root cause as the 2
+    baseline failures in this file,
+    test_signup_with_ref_stores_code_and_reports_signup /
+    test_signup_without_ref_does_not_report_signup) that is out of scope
+    for this task."""
+    with patch("services.token_wallet.ensure_wallet") as mock_ensure_wallet, \
+         patch.object(auth_routes, "get_env", return_value=""), \
+         patch.object(auth_routes, "trigger_verification_email", return_value=False):
+        resp = _signup_form(client, username="walletuser", email="walletuser@example.com")
+
+    assert resp.status_code in (200, 303)
+    mock_ensure_wallet.assert_called_once()
+    args, kwargs = mock_ensure_wallet.call_args
+    # ensure_wallet(db, user) — second positional arg is the just-created user
+    called_user = args[1] if len(args) > 1 else kwargs.get("user")
+    assert called_user.username == "walletuser"
+
+
+def test_signup_succeeds_even_if_jts_ensure_wallet_raises(db, client):
+    """A JTS outage at signup time (network blip, JTS deployment down, etc.)
+    must not crash the signup request or prevent the account from being
+    created — ensure_wallet is called after the user is already committed,
+    and any failure there is caught and logged so signup still proceeds.
+
+    get_env and trigger_verification_email are patched out for the same
+    unrelated get_env/SessionLocal reason as test_signup_creates_jts_wallet
+    above."""
+    with patch("services.token_wallet.ensure_wallet", side_effect=ConnectionError("boom")) as mock_ensure_wallet, \
+         patch.object(auth_routes, "get_env", return_value=""), \
+         patch.object(auth_routes, "trigger_verification_email", return_value=False):
+        resp = _signup_form(client, username="walletfail", email="walletfail@example.com")
+
+    # Full success, not merely "didn't crash": redirected to /dashboard with
+    # a session cookie set, proving the account was created and the user was
+    # logged in despite ensure_wallet raising. (Note: this test's `client`
+    # fixture uses its own isolated DB/engine, separate from the `db`
+    # fixture, so we verify via the response rather than a `db` query.)
+    assert resp.status_code == 303
+    assert resp.headers["location"] == "/dashboard"
+    assert COOKIE_NAME in resp.cookies
+    mock_ensure_wallet.assert_called_once()
+
+
+def _poison_session_ensure_wallet(db, user):
+    """Stand-in for services.token_wallet.ensure_wallet that reproduces the
+    exact scenario found in commit ef14c7c's code review: the JTS HTTP call
+    succeeds (ensure_wallet's own network step is never even reached here —
+    doesn't matter, it doesn't touch `db`), but the LOCAL `db.commit()`
+    ensure_wallet does afterwards (to persist user.jts_wallet_id) fails.
+
+    Rather than faking the exception, this forces a *real* IntegrityError by
+    committing a genuine UNIQUE-constraint violation (duplicate username) on
+    the same session the request is using — so SQLAlchemy actually leaves
+    that session in its real 'pending rollback' state, the same way a
+    transient DB blip / deadlock / pool exhaustion would in production."""
+    dup = User(
+        username=user.username,
+        email="dup-" + user.email,
+        hashed_password="x",
+        role="client",
+        tier="trial",
+    )
+    db.add(dup)
+    db.commit()
+
+
+def test_signup_succeeds_when_ensure_wallet_local_commit_fails(db, client):
+    """Reproduces the code-review finding on commit ef14c7c: if the failure
+    inside ensure_wallet comes from ITS OWN db.commit() (not the JTS HTTP
+    call), the session is left needing a rollback. Without db.rollback() in
+    signup_submit's except clause, the very next commit-requiring call
+    (trigger_verification_email -> create_verification_token -> db.commit())
+    hits that poisoned session and raises PendingRollbackError uncaught,
+    crashing the whole signup request -- exactly the failure mode the
+    ensure_wallet except clause exists to prevent.
+
+    Unlike test_signup_creates_jts_wallet / test_signup_succeeds_even_if_...
+    above, trigger_verification_email is deliberately left un-mocked here:
+    we need its real db.commit() to run against the SAME session
+    ensure_wallet poisoned, to actually prove the rollback fix works. Only
+    get_env (for _app_url) and send_email_verification are patched, to route
+    around the pre-existing/unrelated env_configs SessionLocal issue and
+    avoid needing real SMTP config -- neither one touches the session under
+    test, so patching them doesn't weaken the reproduction.
+
+    Before the routes/auth_routes.py fix (db.rollback() added to the
+    ensure_wallet except clause), this test fails because the uncaught
+    PendingRollbackError propagates through TestClient's default
+    raise_server_exceptions=True. After the fix, signup completes normally."""
+    with patch("services.token_wallet.ensure_wallet", side_effect=_poison_session_ensure_wallet), \
+         patch.object(auth_routes, "get_env", return_value=""), \
+         patch.object(auth_routes, "send_email_verification", return_value=False):
+        resp = _signup_form(client, username="pendingrollback", email="pendingrollback@example.com")
+
+    assert resp.status_code == 303
+    assert resp.headers["location"] == "/dashboard"
+    assert COOKIE_NAME in resp.cookies
+
+
+# ---------------------------------------------------------------- #
 # Checkout discount / coupon logic (routes/stripe_routes.py)
 # ---------------------------------------------------------------- #
 
@@ -153,6 +266,62 @@ def test_coupon_create_race_falls_through_to_none():
         coupon_id = stripe_routes._coupon_id_for_affiliate_code(code_info)
 
     assert coupon_id is None
+
+
+# ---------------------------------------------------------------- #
+# First-payment reporting (routes/stripe_routes.py —
+# _handle_checkout_completed)
+# ---------------------------------------------------------------- #
+
+def _make_user(db, username="checkout", email="checkout@example.com"):
+    user = User(
+        username=username,
+        email=email,
+        hashed_password="x",
+        role="client",
+        tier="trial",
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    return user
+
+
+def test_checkout_completed_reports_payment_under_invoice_id(db):
+    """Subscription-mode Checkout Sessions carry `invoice` (in_...).
+    charge.refunded reports charge["invoice"], and the hub's record_refund
+    matches Conversion.invoice_id exactly — so the first payment must be
+    reported under the invoice id, not the cs_... session id, or a refunded
+    first payment never reverses the commission."""
+    user = _make_user(db)
+    session_obj = {
+        "id": "cs_test_first",
+        "invoice": "in_first_123",
+        "amount_total": 2900,
+        "metadata": {"user_id": str(user.id)},
+    }
+
+    with patch.object(stripe_routes.affiliates, "report_payment") as mock_report:
+        stripe_routes._handle_checkout_completed(db, session_obj)
+
+    mock_report.assert_called_once_with(user.id, 2900, "in_first_123")
+
+
+def test_checkout_completed_falls_back_to_session_id_without_invoice(db):
+    """When the session carries no invoice (e.g. payment-mode sessions),
+    the handler keeps reporting under the cs_... session id."""
+    user = _make_user(db, username="noinv", email="noinv@example.com")
+    session_obj = {
+        "id": "cs_test_noinv",
+        "invoice": None,
+        "amount_total": 2900,
+        "metadata": {"user_id": str(user.id)},
+    }
+
+    with patch.object(stripe_routes.affiliates, "report_payment") as mock_report:
+        stripe_routes._handle_checkout_completed(db, session_obj)
+
+    mock_report.assert_called_once_with(user.id, 2900, "cs_test_noinv")
 
 
 # ---------------------------------------------------------------- #

@@ -9,7 +9,7 @@
     <p class="lede">Stitch generated clips into a longer video &mdash; add a narration script, layer a music bed, ship it to your channels.</p>
   </div>
   <div class="actions">
-    <span class="hl hl-indigo">{{ credit_balance|default(0) }} credits</span>
+    <span class="hl hl-indigo">{{ credit_balance|default(0) }} tokens</span>
   </div>
 </div>
 {% endblock %}
@@ -57,7 +57,7 @@
     <div class="card-x mt-3 d-none" id="studio-ai-card">
       <div class="card-x-header">
         <h6><i class="fas fa-wand-magic-sparkles me-2 text-muted"></i>AI sequence</h6>
-        <span class="ms-auto small-meta">Brief in, plan out &middot; 2 credits</span>
+        <span class="ms-auto small-meta">Brief in, plan out</span>
       </div>
       <div class="card-x-body">
         <label class="form-label small" for="ai-brief">What's this video about?</label>
@@ -169,12 +169,8 @@
 
     <div class="card-x mb-3">
       <div class="card-x-body">
-        <div class="small-meta mb-1">Estimated cost</div>
-        <div class="d-flex align-items-baseline gap-2">
-          <span class="fw-bold" style="font-size:1.5rem;" id="studio-cost">50</span>
-          <span class="small text-muted">credits</span>
-        </div>
-        <div class="small-meta" id="studio-cost-breakdown">Base 50 + narration 0 + music 0</div>
+        <div class="small-meta mb-1">Cost</div>
+        <div class="fw-semibold" id="studio-cost-breakdown">Composing clips is free. AI narration uses a small amount of tokens, charged only if generation succeeds.</div>
       </div>
     </div>
 
@@ -610,15 +606,14 @@ narrScript.addEventListener('input', () => { narrChars.textContent = narrScript.
 musicChk.addEventListener('change', () => { musicPanel.classList.toggle('d-none', !musicChk.checked); paintCost(); });
 
 function paintCost() {
-  let cost = 50;
-  let nrCost = 0;
-  if (narrChk.checked && narrScript.value.length > 3) {
-    nrCost = Math.ceil(narrScript.value.length / 100) * 5 + 1;
-    cost += nrCost;
-  }
-  document.getElementById('studio-cost').textContent = cost;
-  document.getElementById('studio-cost-breakdown').textContent =
-    `Base 50 + narration ${nrCost} + music 0`;
+  // Composing clips itself is free; the only token-billed part is optional
+  // AI narration, debited server-side against the real balance after a
+  // successful TTS call — there's no accurate fixed number to preview here.
+  const breakdown = document.getElementById('studio-cost-breakdown');
+  if (!breakdown) return;
+  breakdown.textContent = (narrChk.checked && narrScript.value.length > 3)
+    ? 'Composing clips is free. Narration will use a small amount of tokens, charged only if generation succeeds.'
+    : 'Composing clips is free. AI narration uses a small amount of tokens, charged only if generation succeeds.';
 }
 
 // ---------- AI plan ----------
@@ -755,7 +750,7 @@ function pollMusicJob(jobId, attempt, statusEl) {
       return;
     }
     if (job.status === 'failed') {
-      statusEl.innerHTML = `<i class="fas fa-triangle-exclamation text-warning me-1"></i>Music gen failed (${job.error || 'unknown error'}) — credits refunded. Compose will continue without music.`;
+      statusEl.innerHTML = `<i class="fas fa-triangle-exclamation text-warning me-1"></i>Music gen failed (${job.error || 'unknown error'}) — you were not charged. Compose will continue without music.`;
       return;
     }
     pollMusicJob(jobId, attempt + 1, statusEl);
@@ -813,7 +808,7 @@ function pollComposeJob(jobId, attempt) {
   if (attempt >= 40) {
     document.getElementById('compose-running').classList.add('d-none');
     document.getElementById('compose-error-msg').textContent =
-      'Composition is taking longer than expected. Check the Assets page in a minute or two — if it still hasn\'t finished, the worker may be stuck and your credits will refund automatically.';
+      'Composition is taking longer than expected. Check the Assets page in a minute or two — if it still hasn\'t finished, the worker may be stuck. You won\'t be charged unless it completes successfully.';
     document.getElementById('compose-error').classList.remove('d-none');
     return;
   }
@@ -825,7 +820,7 @@ function pollComposeJob(jobId, attempt) {
       document.getElementById('compose-running').classList.add('d-none');
       document.getElementById('compose-result-preview').src = job.result_url;
       document.getElementById('compose-result-meta').textContent =
-        `Took ${job.completed_at ? Math.round((new Date(job.completed_at) - new Date(job.created_at)) / 1000) : '–'}s · ${job.cost_credits} credits`;
+        `Took ${job.completed_at ? Math.round((new Date(job.completed_at) - new Date(job.created_at)) / 1000) : '–'}s`;
       document.getElementById('compose-result').classList.remove('d-none');
       document.getElementById('compose-use-link').classList.remove('d-none');
       TJ.notify.success('Composed — find it in Compose or attach it to a post.');
@@ -833,7 +828,7 @@ function pollComposeJob(jobId, attempt) {
     }
     if (job.status === 'failed') {
       document.getElementById('compose-running').classList.add('d-none');
-      document.getElementById('compose-error-msg').textContent = job.error || 'Composition failed. Credits were refunded.';
+      document.getElementById('compose-error-msg').textContent = job.error || 'Composition failed. You were not charged.';
       document.getElementById('compose-error').classList.remove('d-none');
       return;
     }

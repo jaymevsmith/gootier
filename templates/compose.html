@@ -407,13 +407,12 @@ function imgSelectedModel() {
 }
 
 function imgUpdateCostLine() {
-  const m = imgSelectedModel();
-  if (!m || !imgCatalogState) { imgCostLine.textContent = ''; return; }
-  const bal = imgCatalogState.balance;
-  const enough = bal >= m.credits;
-  imgCostLine.innerHTML = `Cost: <strong>${m.credits} credits</strong> &middot; Balance: ${bal}` +
-    (enough ? '' : ' &middot; <span class="text-warning">Not enough credits</span>');
-  imgSubmitBtn.disabled = !enough;
+  // Token cost is enforced server-side against the real JTS balance
+  // (see services/token_wallet.check_sufficient) — there's no cheap way
+  // to mirror that exact figure client-side, so we don't show a number
+  // here. A generation that can't be afforded is rejected by the server
+  // with a clear "Insufficient tokens" message instead.
+  imgCostLine.textContent = '';
 }
 
 function imgRenderAssetPicker() {
@@ -452,7 +451,7 @@ async function imgOpenModal(targetInputName) {
   imgAssetsState = assetsResp.assets || [];
 
   imgModelSel.innerHTML = (catalog.models.image || []).map(m =>
-    `<option value="${m.key}" ${m.default ? 'selected' : ''}>${m.label} — ${m.credits} cr</option>`
+    `<option value="${m.key}" ${m.default ? 'selected' : ''}>${m.label}</option>`
   ).join('');
   imgRenderAssetPicker();
   imgUpdateCostLine();
@@ -500,7 +499,7 @@ function imgPollJob(jobId, attempt) {
     if (job.status === 'done') {
       imgCurrentResultUrl = job.result_url;
       imgResultPreview.src = job.result_url;
-      imgResultMeta.textContent = `Took ${job.completed_at ? Math.round((new Date(job.completed_at) - new Date(job.created_at)) / 1000) : '–'}s · ${job.cost_credits} credits`;
+      imgResultMeta.textContent = `Took ${job.completed_at ? Math.round((new Date(job.completed_at) - new Date(job.created_at)) / 1000) : '–'}s`;
       imgShowStep('result');
       try {
         const refreshed = await TJ.api.get('/api/media/catalog');
@@ -509,7 +508,7 @@ function imgPollJob(jobId, attempt) {
       return;
     }
     if (job.status === 'failed') {
-      imgErrorMsg.textContent = job.error || 'Generation failed. Credits were refunded.';
+      imgErrorMsg.textContent = job.error || 'Generation failed. You were not charged.';
       imgShowStep('error');
       return;
     }
@@ -608,13 +607,9 @@ function vidUpdateForModel() {
 }
 
 function vidUpdateCostLine() {
-  const m = vidSelectedModel();
-  if (!m || !vidCatalogState) { vidCostLine.textContent = ''; return; }
-  const bal = vidCatalogState.balance;
-  const enough = bal >= m.credits;
-  vidCostLine.innerHTML = `Cost: <strong>${m.credits} credits</strong> &middot; Balance: ${bal}` +
-    (enough ? '' : ' &middot; <span class="text-warning">Not enough credits</span>');
-  vidSubmitBtn.disabled = !enough;
+  // See imgUpdateCostLine — token cost is enforced server-side against the
+  // real JTS balance, so there's no accurate figure to show here.
+  vidCostLine.textContent = '';
 }
 
 function vidRenderAssetPicker() {
@@ -651,7 +646,7 @@ async function vidOpenModal(targetInputName) {
   vidAssetsState = assetsResp.assets || [];
 
   vidModelSel.innerHTML = (catalog.models.video || []).map(m =>
-    `<option value="${m.key}" ${m.default ? 'selected' : ''}>${m.label} — ${m.credits} cr</option>`
+    `<option value="${m.key}" ${m.default ? 'selected' : ''}>${m.label}</option>`
   ).join('');
   vidUpdateForModel();
   vidRenderAssetPicker();
@@ -698,7 +693,7 @@ function vidPollJob(jobId, attempt) {
     if (job.status === 'done') {
       vidCurrentResultUrl = job.result_url;
       vidResultPreview.src = job.result_url;
-      vidResultMeta.textContent = `Took ${job.completed_at ? Math.round((new Date(job.completed_at) - new Date(job.created_at)) / 1000) : '–'}s · ${job.cost_credits} credits`;
+      vidResultMeta.textContent = `Took ${job.completed_at ? Math.round((new Date(job.completed_at) - new Date(job.created_at)) / 1000) : '–'}s`;
       vidShowStep('result');
       try {
         const refreshed = await TJ.api.get('/api/media/catalog');
@@ -707,7 +702,7 @@ function vidPollJob(jobId, attempt) {
       return;
     }
     if (job.status === 'failed') {
-      vidErrorMsg.textContent = job.error || 'Generation failed. Credits were refunded.';
+      vidErrorMsg.textContent = job.error || 'Generation failed. You were not charged.';
       vidShowStep('error');
       return;
     }

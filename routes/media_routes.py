@@ -15,8 +15,8 @@ from sqlalchemy.orm import Session
 from auth import get_current_user, get_current_user_optional
 from database import get_db
 from models import MediaAsset, MediaJob, User, log_action
-from services.credits import balance as credits_balance, grant as credits_grant, spend as credits_spend
 from services.env_config import get_env
+from services.token_wallet import balance_tokens
 from services.media import (
     ACCEPTED_IMAGE_TYPES, MAX_UPLOAD_BYTES,
     MEDIA_MODEL_CATALOG, build_image_payload, build_video_payload,
@@ -61,7 +61,7 @@ async def assets_page(
     return templates.TemplateResponse(request, "assets.html", {
         "user": user,
         "assets": items,
-        "credits": credits_balance(db, user),
+        "credit_balance": balance_tokens(db, user) // 1000,
         "kinds": VALID_KINDS,
     })
 
@@ -194,16 +194,24 @@ async def delete_asset(
 
 @router.get("/api/media/catalog")
 async def media_catalog(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    """Catalog of available models + the user's current credit balance —
-    consumed by the generation modals in /compose, /ai-builder, /assets."""
-    bal = credits_balance(db, user)
+    """Catalog of available models + the user's current JTS token balance
+    (display units, `_display` convention: raw tokens // 1000) — consumed by
+    the generation modals in /compose, /ai-builder, /assets.
+
+    Per-model cost isn't surfaced here: real spend is billed against actual
+    usage (real fal duration, real Anthropic tokens, etc.) through the Jhome
+    Token Service, not a flat per-model number, so there's no single accurate
+    figure to show per model. Affordability is enforced server-side at
+    submit time (see services/token_wallet.check_sufficient) — the client
+    doesn't do a pre-flight cost comparison.
+    """
+    bal = balance_tokens(db, user) // 1000
     out = {"balance": bal, "models": {}}
     for kind, options in MEDIA_MODEL_CATALOG.items():
         out["models"][kind] = [
             {
                 "key": k,
                 "label": v["label"],
-                "credits": v["credits"],
                 "supports_reference": v.get("supports_reference", False),
                 "default": v.get("default", False),
             }
@@ -272,8 +280,9 @@ async def create_image_job(
                    f"Pick one from your library or choose a text-only model.",
         )
 
-    cost = int(model["credits"])
-    credits_spend(db, user, cost, reason="image_gen", detail=f"model={model['key']}")
+    from services.media import estimate_tokens
+    from services.token_wallet import check_sufficient
+    check_sufficient(db, user, estimate_tokens(model["key"]))
 
     webhook_token = py_secrets.token_urlsafe(24)
     job = MediaJob(
@@ -286,7 +295,6 @@ async def create_image_job(
         ref_asset_ids=",".join(str(i) for i in payload.asset_ids) if payload.asset_ids else None,
         aspect_ratio=payload.aspect_ratio,
         status="queued",
-        cost_credits=cost,
         webhook_token=webhook_token,
     )
     db.add(job)
@@ -308,25 +316,29 @@ async def create_image_job(
         log_action(db, user, "CREATE", "MediaJob", str(job.id),
                    detail=f"image submit endpoint={model['endpoint']} req={request_id} webhook={'yes' if webhook_url else 'no'}")
     except HTTPException:
-        _refund_and_fail(db, user, job, "fal submission failed (HTTPException)")
+        _mark_failed(db, user, job, "fal submission failed (HTTPException)")
         raise
     except Exception as e:
-        _refund_and_fail(db, user, job, f"fal submission failed: {e}")
+        _mark_failed(db, user, job, f"fal submission failed: {e}")
         raise HTTPException(status_code=502, detail=f"Image generation failed to start: {e}")
 
     db.refresh(job)
     return _serialize_job(job)
 
 
-def _refund_and_fail(db: Session, user: User, job: MediaJob, error: str) -> None:
+def _mark_failed(db: Session, user: User, job: MediaJob, error: str) -> None:
+    """No refund needed — under JTS billing, nothing is charged until the job
+    succeeds (see fal_webhook), so a failure before that point never spent
+    anything. Guarded against overwriting an already-committed "done" status
+    (e.g. if a post-success debit call raises a transport error rather than
+    the caught JTSError/InsufficientTokensError types) — the job's real
+    result must never be masked by a later billing hiccup."""
+    if job.status == "done":
+        return
     job.status = "failed"
     job.error = error
     job.completed_at = datetime.utcnow()
     db.commit()
-    if job.cost_credits:
-        credits_grant(db, user, job.cost_credits,
-                      reason=f"refund_failed_{job.id}",
-                      detail=f"Auto-refund for failed media job #{job.id}: {error[:120]}")
 
 
 @router.get("/api/media/jobs/{job_id}")
@@ -369,9 +381,20 @@ async def get_media_job(
             job.status = "done"
             job.completed_at = datetime.utcnow()
             db.commit()
+            from services.media import JTS_RATE_KEY, billed_video_seconds
+            from services.token_wallet import debit_after_success
+            if job.kind == "video":
+                units = billed_video_seconds(job.model_endpoint, job.duration_seconds or 5)
+            else:
+                units = 1
+            debit_after_success(
+                db, user, model_key=JTS_RATE_KEY[job.model_key],
+                request_id=f"gootier-mediajob-{job.id}",
+                units=units,
+            )
             log_action(db, user, "UPDATE", "MediaJob", str(job.id), detail="completed")
         except Exception as e:
-            _refund_and_fail(db, user, job, f"result fetch failed: {e}")
+            _mark_failed(db, user, job, f"result fetch failed: {e}")
     elif phase == "running" and job.status != "running":
         job.status = "running"
         db.commit()
@@ -388,7 +411,7 @@ class VideoJobCreate(BaseModel):
     prompt: str = Field(..., min_length=3, max_length=4000)
     model_key: Optional[str] = None
     asset_id: int  # video models take a single image_url
-    duration_seconds: int = 5
+    duration_seconds: int = Field(5, ge=1, le=60)
     aspect_ratio: str = "auto"
     resolution: str = "720p"
     generate_audio: bool = True
@@ -559,10 +582,10 @@ async def create_compose_job(
         for ov in (payload.text_overlays or [])
     ]
 
-    # Credit cost: flat 50 for the compose + TTS surcharge if narration set.
-    cost = 50
     tts_endpoint = None
     voice_id = None
+    narration_chars = 0
+    narration_text = None
     if payload.narration_script:
         script = (payload.narration_script or "").strip()
         if len(script) < 4:
@@ -576,10 +599,13 @@ async def create_compose_job(
         tts_endpoint = model["endpoint"]
         voice_map = dict(model["voices"])
         voice_id = voice_map.get(chosen) or list(voice_map.values())[0]
-        cost += int((len(script) / 100) * model["credits_per_100_chars"]) + 1
+        narration_text = script
+        narration_chars = len(script)
 
-    credits_spend(db, user, cost, reason="video_compose",
-                  detail=f"clips={len(ordered_clips)} tts={'yes' if tts_endpoint else 'no'} music={'yes' if payload.music_url else 'no'}")
+    if narration_chars:
+        from services.media import estimate_tokens
+        from services.token_wallet import check_sufficient
+        check_sufficient(db, user, estimate_tokens("eleven-turbo", units=narration_chars))
 
     job = MediaJob(
         user_id=user.id,
@@ -590,7 +616,6 @@ async def create_compose_job(
         prompt=(payload.narration_script or "")[:500],
         ref_asset_ids=None,
         status="queued",
-        cost_credits=cost,
         compose_meta_json=_json.dumps({
             "source_job_ids": payload.source_job_ids,
             "keep_original_audio": payload.keep_original_audio,
@@ -613,9 +638,10 @@ async def create_compose_job(
     _asyncio.create_task(_run_compose_job(
         job.id, [c.result_url for c in ordered_clips],
         payload.keep_original_audio,
-        payload.narration_script, tts_endpoint, voice_id,
+        narration_text, tts_endpoint, voice_id,
         payload.music_url, user.id, sanitized_opts or None,
         sanitized_trans or None, sanitized_overlays or None,
+        narration_chars,
     ))
 
     log_action(db, user, "CREATE", "MediaJob", str(job.id),
@@ -629,7 +655,8 @@ async def _run_compose_job(job_id: int, clip_urls: list, keep_original: bool,
                             user_id: int,
                             clip_options: Optional[List[dict]] = None,
                             transitions: Optional[List[dict]] = None,
-                            text_overlays: Optional[List[dict]] = None) -> None:
+                            text_overlays: Optional[List[dict]] = None,
+                            narration_chars: int = 0) -> None:
     """Background worker — does the actual ffmpeg + TTS work + DB update."""
     from datetime import datetime as _dt
     from database import SessionLocal
@@ -674,6 +701,15 @@ async def _run_compose_job(job_id: int, clip_urls: list, keep_original: bool,
             job.status = "done"
             job.completed_at = _dt.utcnow()
             db.commit()
+            if narration_chars:
+                from services.media import JTS_RATE_KEY
+                from services.token_wallet import debit_after_success
+                user = db.query(User).filter(User.id == user_id).first()
+                debit_after_success(
+                    db, user, model_key=JTS_RATE_KEY["eleven-turbo"],
+                    request_id=f"gootier-mediajob-{job.id}",
+                    units=narration_chars,
+                )
             log.info("compose job %s done -> %s", job.id, url)
         finally:
             if tmp_audio_dir:
@@ -684,18 +720,12 @@ async def _run_compose_job(job_id: int, clip_urls: list, keep_original: bool,
         try:
             job = db.query(MediaJob).filter(MediaJob.id == job_id).first()
             if job and job.status != "done":
-                from services.credits import grant as _grant
-                user = db.query(User).filter(User.id == user_id).first()
-                if user and job.cost_credits:
-                    _grant(db, user, job.cost_credits,
-                           reason=f"refund_failed_{job.id}",
-                           detail=f"Auto-refund — compose failed: {e}")
                 job.status = "failed"
                 job.error = str(e)[:1000]
                 job.completed_at = _dt.utcnow()
                 db.commit()
         except Exception:
-            log.exception("refund/finalise also failed for job %s", job_id)
+            log.exception("finalise also failed for job %s", job_id)
     finally:
         db.close()
 
@@ -728,8 +758,10 @@ async def compose_ai_plan(
     feed this straight into the existing ``POST /api/media/jobs/compose``
     endpoint after the user reviews + edits.
 
-    Costs 2 credits (Sonnet planning call only — music generation is billed
-    separately if the user accepts the suggested music_prompt).
+    Billed after success on real Anthropic token usage (JTS) — soft
+    pre-flight balance check only, no upfront local-ledger spend. Covers
+    the Sonnet planning call only — music generation is billed separately
+    if the user accepts the suggested music_prompt.
     """
     # 1) Validate clips belong to the user, are video, are done.
     sources = db.query(MediaJob).filter(
@@ -752,13 +784,16 @@ async def compose_ai_plan(
         "prompt": (c.prompt or "")[:200],
     } for i, c in enumerate(ordered_clips)]
 
-    credits_spend(db, user, 2, reason="video_compose_ai_plan",
-                  detail=f"clips={len(ordered_clips)} brief_chars={len(payload.brief)}")
+    from services.token_wallet import check_sufficient, debit_after_success
+    # Conservative pre-flight estimate: ~2000 input + 2048 max output tokens
+    # at anthropic-sonnet-5 blended pricing ($3/$15 per 1M). Real debit below
+    # always uses the actual reported usage, never this estimate.
+    check_sufficient(db, user, estimated_tokens=40_000)
 
     # 2) Call Sonnet for the plan.
     from services.ai_generator import plan_video_compose
     try:
-        plan = plan_video_compose(
+        result = plan_video_compose(
             brief=payload.brief,
             clip_meta=clip_meta,
             want_music=payload.want_music,
@@ -766,12 +801,15 @@ async def compose_ai_plan(
             style=payload.style,
         )
     except Exception as e:
-        # Refund the 2 credits on failure — same pattern as compose worker.
-        from services.credits import grant as _grant
-        _grant(db, user, 2,
-               reason="refund_ai_plan_failed",
-               detail=f"AI plan failed: {str(e)[:200]}")
         raise HTTPException(status_code=502, detail=f"AI plan failed: {e}")
+
+    usage = result.pop("_usage")
+    plan = result
+    debit_after_success(
+        db, user, model_key="anthropic-sonnet-5",
+        request_id=f"gootier-aiplan-{py_secrets.token_urlsafe(12)}",
+        input_tokens=usage["input_tokens"], output_tokens=usage["output_tokens"],
+    )
 
     # 3) Sanitize the plan against the same allowlists the compose endpoint uses.
     #
@@ -881,14 +919,15 @@ async def create_music_job(
 ):
     """Generate an instrumental music clip via fal stable-audio.
 
-    Costs 8 credits — billed up-front, refunded on failure.  Returns the
-    standard MediaJob serialization so the client can poll
+    Billed after success on real per-second fal usage (JTS) — soft
+    pre-flight balance check only, no upfront local-ledger spend.  Returns
+    the standard MediaJob serialization so the client can poll
     ``GET /api/media/jobs/{id}`` until ``result_url`` is set.
     """
     import asyncio as _asyncio
-    cost = 8
-    credits_spend(db, user, cost, reason="music_generate",
-                  detail=f"seconds={payload.seconds} prompt_chars={len(payload.prompt)}")
+    from services.media import estimate_tokens
+    from services.token_wallet import check_sufficient
+    check_sufficient(db, user, estimate_tokens("stable-audio", units=payload.seconds))
     job = MediaJob(
         user_id=user.id,
         kind="audio",
@@ -897,7 +936,6 @@ async def create_music_job(
         model_endpoint="fal-ai/stable-audio",
         prompt=payload.prompt[:500],
         status="queued",
-        cost_credits=cost,
     )
     db.add(job)
     db.commit()
@@ -930,19 +968,22 @@ async def _run_music_job(job_id: int, prompt: str, seconds: int, user_id: int) -
             job.status = "done"
             job.completed_at = _dt.utcnow()
             db.commit()
+            from services.media import JTS_RATE_KEY
+            from services.token_wallet import debit_after_success
+            user = db.query(User).filter(User.id == user_id).first()
+            debit_after_success(
+                db, user, model_key=JTS_RATE_KEY["stable-audio"],
+                request_id=f"gootier-mediajob-{job.id}",
+                units=seconds,
+            )
             log.info("music job %s done -> %s", job.id, url)
         except Exception as e:
             log.exception("music job %s failed: %s", job_id, e)
-            from services.credits import grant as _grant
-            user = db.query(User).filter(User.id == user_id).first()
-            if user and job.cost_credits:
-                _grant(db, user, job.cost_credits,
-                       reason=f"refund_failed_{job.id}",
-                       detail=f"Auto-refund — music gen failed: {e}")
-            job.status = "failed"
-            job.error = str(e)[:1000]
-            job.completed_at = _dt.utcnow()
-            db.commit()
+            if job.status != "done":
+                job.status = "failed"
+                job.error = str(e)[:1000]
+                job.completed_at = _dt.utcnow()
+                db.commit()
     finally:
         db.close()
 
@@ -964,8 +1005,12 @@ async def create_video_job(
     if not asset:
         raise HTTPException(status_code=400, detail="Reference asset not found or not yours.")
 
-    cost = int(model["credits"])
-    credits_spend(db, user, cost, reason="video_gen", detail=f"model={model['key']}")
+    from services.media import billed_video_seconds, estimate_tokens
+    from services.token_wallet import check_sufficient
+    check_sufficient(
+        db, user,
+        estimate_tokens(model["key"], units=billed_video_seconds(model["endpoint"], payload.duration_seconds)),
+    )
 
     webhook_token = py_secrets.token_urlsafe(24)
     job = MediaJob(
@@ -979,7 +1024,6 @@ async def create_video_job(
         aspect_ratio=payload.aspect_ratio,
         duration_seconds=payload.duration_seconds,
         status="queued",
-        cost_credits=cost,
         webhook_token=webhook_token,
     )
     db.add(job)
@@ -1004,10 +1048,10 @@ async def create_video_job(
         log_action(db, user, "CREATE", "MediaJob", str(job.id),
                    detail=f"video submit endpoint={model['endpoint']} req={request_id} webhook={'yes' if webhook_url else 'no'}")
     except HTTPException:
-        _refund_and_fail(db, user, job, "fal submission failed (HTTPException)")
+        _mark_failed(db, user, job, "fal submission failed (HTTPException)")
         raise
     except Exception as e:
-        _refund_and_fail(db, user, job, f"fal submission failed: {e}")
+        _mark_failed(db, user, job, f"fal submission failed: {e}")
         raise HTTPException(status_code=502, detail=f"Video generation failed to start: {e}")
 
     db.refresh(job)
@@ -1059,13 +1103,24 @@ async def fal_webhook(
             job.status = "done"
             job.completed_at = datetime.utcnow()
             db.commit()
+            from services.media import JTS_RATE_KEY, billed_video_seconds
+            from services.token_wallet import debit_after_success
+            if job.kind == "video":
+                units = billed_video_seconds(job.model_endpoint, job.duration_seconds or 5)
+            else:
+                units = 1
+            debit_after_success(
+                db, job.user, model_key=JTS_RATE_KEY[job.model_key],
+                request_id=f"gootier-mediajob-{job.id}",
+                units=units,
+            )
             log_action(db, job.user, "UPDATE", "MediaJob", str(job.id),
                        detail="completed via webhook")
         except Exception as e:
-            _refund_and_fail(db, job.user, job, f"webhook result parse failed: {e}")
+            _mark_failed(db, job.user, job, f"webhook result parse failed: {e}")
     elif status == "ERROR":
         err = payload.get("error") or "fal reported ERROR"
-        _refund_and_fail(db, job.user, job, str(err))
+        _mark_failed(db, job.user, job, str(err))
 
     return {"ok": True}
 

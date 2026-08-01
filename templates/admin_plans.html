@@ -1,14 +1,13 @@
 {% extends "base.html" %}
-{% block title %}Plans &amp; Packs &middot; Admin{% endblock %}
+{% block title %}Plans &middot; Admin{% endblock %}
 
 {% block page_header %}
 <div class="page-header-row">
   <div>
     <div class="eyebrow">Admin</div>
-    <h1>Plans &amp; Packs</h1>
+    <h1>Plans</h1>
     <p class="lede">Everything users see on <a href="/billing">/billing</a> &mdash; subscription tiers,
-      prices, features, monthly credit grants, and one-off credit packs. Changes go live on the next
-      page load, no restart needed.</p>
+      prices, features, and quotas. Changes go live on the next page load, no restart needed.</p>
   </div>
   <div class="actions">
     <a href="/admin/users" class="btn btn-soft"><i class="fas fa-users me-2"></i>Users</a>
@@ -24,21 +23,12 @@
   <i class="fas fa-circle-info mt-1"></i>
   <div>
     Subscription tiers need <strong>both</strong> a Stripe Price ID (for billing) and the display
-    fields below (for the customer-facing card). Credit packs use Stripe's inline pricing &mdash; just
-    set credits + cents and Stripe builds the line item at checkout time, no Stripe Dashboard product needed.
+    fields below (for the customer-facing card).
   </div>
 </div>
 
 <h4 class="mt-4 mb-3"><i class="fas fa-layer-group me-2 text-muted"></i>Subscription tiers</h4>
 <div id="tiers-wrap"><div class="text-center text-muted py-5">Loading tiers&hellip;</div></div>
-
-<h4 class="mt-5 mb-3 d-flex align-items-center justify-content-between">
-  <span><i class="fas fa-coins me-2 text-muted"></i>Credit packs</span>
-  <button class="btn btn-soft btn-sm" id="pack-add-btn">
-    <i class="fas fa-plus me-1"></i>Add pack
-  </button>
-</h4>
-<div id="packs-wrap"><div class="text-center text-muted py-5">Loading packs&hellip;</div></div>
 {% endblock %}
 
 {% block scripts %}
@@ -49,10 +39,6 @@
   letter-spacing: .05em; color: var(--g-text-3); margin-bottom: .15rem; }
 .plans-card input[type=text], .plans-card input[type=number] {
   padding: .4rem .6rem; font-size: .9rem;
-}
-.plans-card .pack-key {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: .82rem; color: var(--g-text-2);
 }
 .features-editor textarea {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -92,7 +78,6 @@
 
 <script>
 const tiersWrap = document.getElementById('tiers-wrap');
-const packsWrap = document.getElementById('packs-wrap');
 
 function esc(s) {
   return String(s ?? '').replace(/[&<>"']/g, c => (
@@ -155,11 +140,6 @@ function tierCardHTML(t) {
             <input type="number" min="0" step="0.01" class="form-control" data-field="monthly_price_dollars"
                    value="${((t.monthly_price_cents || 0) / 100).toFixed(2)}">
           </div>
-        </div>
-        <div class="col-md-3">
-          <label>Monthly credits</label>
-          <input type="number" min="0" step="1" class="form-control" data-field="monthly_credit_grant"
-                 value="${t.monthly_credit_grant}">
         </div>
         <div class="col-md-4">
           <label>Stripe Price ID (monthly)</label>
@@ -231,7 +211,6 @@ function wireTierCard(tierKey) {
       monthly_price_cents: Math.round(dollars * 100),
       stripe_price_id: get('stripe_price_id').value,
       yearly_stripe_price_id: get('yearly_stripe_price_id').value,
-      monthly_credit_grant: parseInt(get('monthly_credit_grant').value || '0', 10),
       sort_order: parseInt(get('sort_order').value || '0', 10),
       is_active: get('is_active').checked,
       features: get('features').value.split('\n').map(s => s.trim()).filter(Boolean),
@@ -253,116 +232,6 @@ function wireTierCard(tierKey) {
   });
 }
 
-// --- Credit packs ---------------------------------------------------------
-
-async function loadPacks() {
-  const data = await TJ.api.get('/api/admin/topup-packs');
-  if (!data) return;
-  if (!data.packs.length) {
-    packsWrap.innerHTML = '<div class="text-muted">No packs configured. Click <strong>Add pack</strong> to create one.</div>';
-    return;
-  }
-  packsWrap.innerHTML = data.packs.map(packCardHTML).join('');
-  data.packs.forEach(p => wirePackCard(p.key));
-}
-
-function packCardHTML(p) {
-  return `
-    <div class="card-x plans-card" data-pack="${p.key}">
-      <div class="plans-card-head">
-        <h6>${esc(p.label)}</h6>
-        <span class="pack-key">${esc(p.key)}</span>
-        <span class="hl ${p.is_active ? 'hl-success' : 'hl-muted'}">${p.is_active ? 'Active' : 'Hidden'}</span>
-        <div class="plans-card-actions">
-          <span class="plans-save-status" data-save-status></span>
-          <button class="btn btn-soft btn-sm" data-pack-save>Save</button>
-          <button class="btn btn-soft btn-sm" data-pack-delete title="Delete pack">
-            <i class="fas fa-trash"></i>
-          </button>
-        </div>
-      </div>
-      <div class="row g-2">
-        <div class="col-md-5">
-          <label>Label (shown on billing page)</label>
-          <input type="text" class="form-control" data-field="label" value="${esc(p.label)}" maxlength="120">
-        </div>
-        <div class="col-md-2">
-          <label>Credits</label>
-          <input type="number" min="1" step="1" class="form-control" data-field="credits" value="${p.credits}">
-        </div>
-        <div class="col-md-2">
-          <label>Price (USD)</label>
-          <div class="input-group">
-            <span class="input-group-text">$</span>
-            <input type="number" min="0" step="0.01" class="form-control" data-field="price_dollars"
-                   value="${(p.price_cents / 100).toFixed(2)}">
-          </div>
-        </div>
-        <div class="col-md-1">
-          <label>Order</label>
-          <input type="number" step="1" class="form-control" data-field="sort_order" value="${p.sort_order}">
-        </div>
-        <div class="col-md-2 d-flex align-items-end">
-          <div class="form-check">
-            <input type="checkbox" class="form-check-input" id="pack-active-${p.key}"
-                   data-field="is_active" ${p.is_active ? 'checked' : ''}>
-            <label class="form-check-label small" for="pack-active-${p.key}">Active</label>
-          </div>
-        </div>
-      </div>
-    </div>`;
-}
-
-function wirePackCard(key) {
-  const card = packsWrap.querySelector(`.plans-card[data-pack="${key}"]`);
-  if (!card) return;
-  const status = card.querySelector('[data-save-status]');
-  card.querySelector('[data-pack-save]').addEventListener('click', async () => {
-    const get = (f) => card.querySelector(`[data-field="${f}"]`);
-    const dollars = parseFloat(get('price_dollars').value || '0');
-    const payload = {
-      label: get('label').value,
-      credits: parseInt(get('credits').value || '0', 10),
-      price_cents: Math.round(dollars * 100),
-      sort_order: parseInt(get('sort_order').value || '0', 10),
-      is_active: get('is_active').checked,
-    };
-    status.textContent = 'Saving…'; status.className = 'plans-save-status';
-    const updated = await TJ.api.patch(`/api/admin/topup-packs/${key}`, payload, { successMsg: 'Pack saved' });
-    if (updated) {
-      status.textContent = '✓ Saved'; status.className = 'plans-save-status saved';
-      setTimeout(() => { status.textContent = ''; }, 2500);
-    } else {
-      status.textContent = 'Save failed'; status.className = 'plans-save-status error';
-    }
-  });
-  card.querySelector('[data-pack-delete]').addEventListener('click', async () => {
-    const ok = await TJ.confirm(`Delete pack "${key}"? It will disappear from /billing immediately.`, {
-      title: 'Delete pack', okLabel: 'Delete', danger: true,
-    });
-    if (!ok) return;
-    const r = await TJ.api.del(`/api/admin/topup-packs/${key}`, { successMsg: 'Pack deleted' });
-    if (r) loadPacks();
-  });
-}
-
-document.getElementById('pack-add-btn').addEventListener('click', async () => {
-  const key = prompt('Pack key (alphanumeric / underscore — e.g. pack_500):');
-  if (!key) return;
-  const label = prompt('Label shown on the billing page (e.g. "Starter — 500 credits"):');
-  if (!label) return;
-  const credits = parseInt(prompt('Credits granted:', '500') || '0', 10);
-  if (!credits || credits < 1) { TJ.notify.warning('Credits must be a positive integer.'); return; }
-  const dollars = parseFloat(prompt('Price in USD (e.g. 5.00):', '5.00') || '0');
-  if (!(dollars > 0)) { TJ.notify.warning('Price must be > 0.'); return; }
-  const r = await TJ.api.post('/api/admin/topup-packs', {
-    key: key.trim(), label: label.trim(), credits, price_cents: Math.round(dollars * 100),
-    sort_order: 999, is_active: true,
-  }, { successMsg: 'Pack created' });
-  if (r) loadPacks();
-});
-
 loadTiers();
-loadPacks();
 </script>
 {% endblock %}
