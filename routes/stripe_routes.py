@@ -38,53 +38,6 @@ def _ensure_stripe_key() -> str:
 _BILLING_TIER_KEYS = ("bronze", "silver", "gold")
 
 
-def _stripe_price_id_for_tier(db: Session, tier_key: str, period: str = "monthly") -> Optional[str]:
-    """Look up a tier's Stripe Price ID for the given billing period.
-
-    Monthly reads `tier_configs.stripe_price_id` first (admin-editable on
-    /admin/plans), then falls back to the legacy `STRIPE_PRICE_BRONZE/SILVER/GOLD`
-    env keys so older installs keep working.  Yearly reads
-    `tier_configs.yearly_stripe_price_id` only — no env fallback, the feature is new.
-    """
-    row = db.query(TierConfig).filter(TierConfig.tier == tier_key).first()
-    if period == "yearly":
-        return (row.yearly_stripe_price_id or None) if row else None
-    if row and row.stripe_price_id:
-        return row.stripe_price_id
-    legacy = get_env(f"STRIPE_PRICE_{tier_key.upper()}", "")
-    return legacy or None
-
-
-def _load_billing_tiers(db: Session) -> list[dict]:
-    """All tier rows the billing page should render, in their configured sort
-    order, normalized to the dict shape billing.html expects."""
-    rows = (
-        db.query(TierConfig)
-        .filter(TierConfig.tier.in_(_BILLING_TIER_KEYS), TierConfig.is_active == True)  # noqa: E712
-        .order_by(TierConfig.sort_order.asc())
-        .all()
-    )
-    out = []
-    for r in rows:
-        legacy_env = f"STRIPE_PRICE_{r.tier.upper()}"
-        price_id = r.stripe_price_id or get_env(legacy_env, "") or None
-        monthly_cents = r.monthly_price_cents or 0
-        out.append({
-            "key": r.tier,
-            "name": r.display_name or r.tier.title(),
-            "blurb": r.blurb or "",
-            "monthly_price_cents": monthly_cents,
-            "yearly_price_cents": monthly_cents * 10,
-            "features": r.features_list(),
-            "price_id": price_id,
-            "price_id_env": legacy_env,   # kept so the disabled-button tooltip can still hint
-            "configured": bool(price_id),
-            "yearly_price_id": r.yearly_stripe_price_id or None,
-            "yearly_configured": bool(r.yearly_stripe_price_id),
-        })
-    return out
-
-
 def _price_id_to_tier_key(db: Session) -> dict:
     """Reverse lookup for the Stripe webhook: price_id -> tier_key.
 
@@ -109,16 +62,10 @@ async def billing_page(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    tiers_view = _load_billing_tiers(db)
-    for t in tiers_view:
-        t["current"] = (user.tier == t["key"])
     from services.token_wallet import balance_tokens
     from services.env_config import get_env
     return templates.TemplateResponse(request, "billing.html", {
         "user": user,
-        "tiers": tiers_view,
-        "stripe_configured": bool(_stripe_secret()),
-        "has_subscription": bool(user.stripe_customer_id),
         "token_balance_display": balance_tokens(db, user) // 1000,
         "token_service_url": get_env("TOKEN_SERVICE_URL", "https://jhome-token-service-production.up.railway.app"),
         "token_service_app_slug": "gootier",
@@ -126,104 +73,6 @@ async def billing_page(
 
 
 # ------------------------------ Checkout ------------------------------ #
-
-def _coupon_id_for_affiliate_code(code_info: dict) -> Optional[str]:
-    """Get-or-create a Stripe Coupon in GOOTIER's own Stripe account matching
-    the Jhome Affiliates hub's validate_code() response, and return its id.
-
-    Coupon id is deterministic (derived from the code + terms) so repeat
-    checkouts reuse the same Stripe Coupon object instead of creating a new
-    one every time. Returns None if the code isn't valid or Stripe rejects it.
-    """
-    if not code_info.get("valid"):
-        return None
-
-    percent_off = code_info.get("percent_off")
-    amount_off_cents = code_info.get("amount_off_cents")
-    duration = code_info.get("duration") or "once"
-    duration_months = code_info.get("duration_months")
-    code = code_info.get("code") or ""
-
-    if not percent_off and not amount_off_cents:
-        logger.warning(
-            "affiliates discount code %r validated but has neither percent_off "
-            "nor amount_off_cents — skipping discount", code,
-        )
-        return None
-
-    coupon_id = f"ja-{code}-{duration}-{percent_off or 0}-{amount_off_cents or 0}"
-    coupon_id = coupon_id.lower().replace(" ", "_")[:64]
-
-    try:
-        return stripe.Coupon.retrieve(coupon_id).id
-    except stripe.error.InvalidRequestError:
-        pass  # doesn't exist yet — create it below
-
-    params = {"id": coupon_id, "duration": duration}
-    if duration == "repeating":
-        params["duration_in_months"] = duration_months or 1
-    if percent_off:
-        params["percent_off"] = percent_off
-    elif amount_off_cents:
-        params["amount_off"] = amount_off_cents
-        params["currency"] = "usd"
-
-    try:
-        coupon = stripe.Coupon.create(**params)
-        return coupon.id
-    except stripe.error.StripeError as e:
-        logger.warning(
-            "Stripe coupon create failed for affiliates discount code %r (coupon_id=%s): %s",
-            code, coupon_id, e,
-        )
-        return None
-
-
-@router.post("/api/billing/checkout")
-async def create_checkout_session(
-    request: Request,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    _ensure_stripe_key()
-    body = await request.json()
-    tier = body.get("tier")
-    period = body.get("period", "monthly")
-    discount_code = (body.get("discount_code") or "").strip()
-    if period not in ("monthly", "yearly"):
-        raise HTTPException(status_code=400, detail=f"Invalid billing period: {period!r}")
-    price_id = _stripe_price_id_for_tier(db, tier, period) if tier in _BILLING_TIER_KEYS else None
-    if not price_id:
-        raise HTTPException(status_code=400, detail=f"Unknown or unconfigured {period} tier: {tier}")
-
-    discounts = None
-    if discount_code:
-        code_info = affiliates.validate_code(discount_code)
-        coupon_id = _coupon_id_for_affiliate_code(code_info)
-        if coupon_id:
-            discounts = [{"coupon": coupon_id}]
-
-    try:
-        session = stripe.checkout.Session.create(
-            mode="subscription",
-            line_items=[{"price": price_id, "quantity": 1}],
-            customer=user.stripe_customer_id or None,
-            customer_email=None if user.stripe_customer_id else user.email,
-            client_reference_id=str(user.id),
-            metadata={"user_id": str(user.id), "tier": tier, "period": period},
-            subscription_data={"metadata": {"user_id": str(user.id), "tier": tier, "period": period}},
-            success_url=f"{_app_url()}/billing?upgraded=1",
-            cancel_url=f"{_app_url()}/billing?cancelled=1",
-            **({"discounts": discounts} if discounts else {}),
-        )
-    except stripe.error.StripeError as e:
-        raise HTTPException(status_code=502, detail=str(e))
-
-    if discounts:
-        affiliates.report_redemption(discount_code)
-
-    return {"url": session.url}
-
 
 @router.post("/api/billing/tokens/checkout")
 async def create_tokens_checkout(
@@ -270,21 +119,6 @@ async def create_tokens_checkout(
         )
         raise HTTPException(status_code=502, detail="Could not start checkout")
     return {"checkout_url": resp.json()["checkout_url"]}
-
-
-@router.post("/api/billing/portal")
-async def create_portal_session(user: User = Depends(get_current_user)):
-    _ensure_stripe_key()
-    if not user.stripe_customer_id:
-        raise HTTPException(status_code=400, detail="No subscription on file")
-    try:
-        portal = stripe.billing_portal.Session.create(
-            customer=user.stripe_customer_id,
-            return_url=f"{_app_url()}/billing",
-        )
-    except stripe.error.StripeError as e:
-        raise HTTPException(status_code=502, detail=str(e))
-    return {"url": portal.url}
 
 
 # ------------------------------ Webhook ------------------------------ #

@@ -5,28 +5,17 @@
 <div class="page-header-row">
   <div>
     <div class="eyebrow">Account</div>
-    <h1>Plans &amp; billing</h1>
+    <h1>Billing</h1>
     <p class="lede">
-      You're on the <span class="hl hl-indigo">{{ user.tier }}</span> plan.
-      {% if user.subscribed_until %}Renews {{ user.subscribed_until.strftime('%b %d, %Y') }}.{% endif %}
+      Gootier runs on Jhome Tokens — buy a bundle below and it's used for image, video,
+      and AI generation across the app.
     </p>
-  </div>
-  <div class="actions">
-    {% if has_subscription %}
-    <button class="btn btn-soft" id="manage-btn">
-      <i class="fas fa-gear me-2"></i> Manage subscription
-    </button>
-    {% endif %}
   </div>
 </div>
 {% endblock %}
 
 {% block content %}
-{% if request.query_params.get('upgraded') %}
-  <div class="alert alert-success">Subscription updated — thanks!</div>
-{% elif request.query_params.get('cancelled') %}
-  <div class="alert alert-secondary">Checkout cancelled. No charge was made.</div>
-{% elif request.query_params.get('credits_added') %}
+{% if request.query_params.get('credits_added') %}
   <div class="alert alert-success">Credits added to your balance.</div>
 {% elif request.query_params.get('credits_cancelled') %}
   <div class="alert alert-secondary">Credit purchase cancelled. No charge was made.</div>
@@ -51,141 +40,4 @@
     </script>
   </div>
 </div>
-
-<h4 class="mt-5 mb-3">Subscription plans</h4>
-
-{% if not stripe_configured %}
-  <div class="alert alert-warning">
-    <strong>Stripe is not configured.</strong> Set <code>STRIPE_SECRET_KEY</code>,
-    <code>STRIPE_WEBHOOK_SECRET</code>, and the <code>STRIPE_PRICE_*</code> env vars to enable checkout.
-  </div>
-{% endif %}
-
-<div class="mb-3 mx-auto" style="max-width:320px;">
-  <label for="promo-code-input" class="form-label small text-muted mb-1">Have a discount code?</label>
-  <input type="text" id="promo-code-input" class="form-control form-control-sm" placeholder="Discount code (optional)" autocomplete="off">
-</div>
-
-<div class="period-toggle" role="group" aria-label="Billing period" style="display:flex;justify-content:center;gap:.25rem;margin:0 auto 1.5rem;width:max-content;background:#f1f3f9;border-radius:999px;padding:.25rem;">
-  <button type="button" class="period-opt is-active" data-period="monthly" aria-pressed="true"
-          style="border:0;background:transparent;border-radius:999px;padding:.4rem 1.1rem;font-weight:600;font-size:.9rem;cursor:pointer;color:#4a5568;">Monthly</button>
-  <button type="button" class="period-opt" data-period="yearly" aria-pressed="false"
-          style="border:0;background:transparent;border-radius:999px;padding:.4rem 1.1rem;font-weight:600;font-size:.9rem;cursor:pointer;color:#4a5568;">
-    Yearly <span class="hl hl-success" style="margin-left:.35rem;">2 months free</span>
-  </button>
-</div>
-<style>
-  .period-toggle .period-opt.is-active { background:#fff; color:#4f46e5; box-shadow:0 1px 3px rgba(0,0,0,.12); }
-  .tier-card .price-yearly { display:none; }
-  .billing-yearly .tier-card .price-monthly { display:none; }
-  .billing-yearly .tier-card .price-yearly { display:block; }
-</style>
-
-<div class="tier-grid">
-  {% for t in tiers %}
-  <div class="tier-card {% if t.key == 'silver' %}featured{% endif %}">
-    {% if t.current %}<span class="hl hl-indigo current-badge">Current</span>{% endif %}
-    <div class="tier-name">{{ t.name }}</div>
-    <div class="tier-blurb">{{ t.blurb }}</div>
-    <div class="tier-price" aria-live="polite">
-      <span class="price-monthly">
-        {% if t.monthly_price_cents %}
-          ${{ '%g'|format(t.monthly_price_cents / 100) }}<small>/month</small>
-        {% else %}
-          <span class="text-muted small">price not set</span>
-        {% endif %}
-      </span>
-      <span class="price-yearly">
-        {% if t.yearly_configured %}
-          ${{ '%g'|format(t.yearly_price_cents / 100) }}<small>/year</small>
-          <div class="hl hl-success small">2 months free</div>
-        {% else %}
-          <span class="text-muted small">yearly not configured</span>
-        {% endif %}
-      </span>
-    </div>
-    <ul class="features">
-      {% for f in t.features %}
-      <li><i class="fas fa-check"></i> {{ f }}</li>
-      {% endfor %}
-    </ul>
-    <button class="btn {% if t.key == 'silver' %}tj-grad-btn{% else %}btn-soft{% endif %} mt-auto"
-            data-upgrade="{{ t.key }}"
-            data-monthly-configured="{{ 1 if t.configured else 0 }}"
-            data-yearly-configured="{{ 1 if t.yearly_configured else 0 }}"
-            data-monthly-title="{% if not t.configured %}Set {{ t.price_id_env }} to enable{% endif %}"
-            data-tier-name="{{ t.name }}"
-            data-current="{{ 1 if t.current else 0 }}"
-            {% if t.current or not t.configured or not stripe_configured %}disabled{% endif %}
-            {% if not t.configured %}title="Set {{ t.price_id_env }} to enable"{% endif %}>
-      {% if t.current %}Current plan
-      {% elif not t.configured %}Not configured
-      {% else %}Upgrade to {{ t.name }}{% endif %}
-    </button>
-  </div>
-  {% endfor %}
-</div>
-
-<div class="text-center mt-5">
-  <p class="small text-muted">All plans include unlimited team members, OAuth-based social posting, AI campaign generation, and our 60-second scheduler.</p>
-</div>
-{% endblock %}
-
-{% block scripts %}
-<script>
-let billingPeriod = 'monthly';
-
-function applyPeriodUI() {
-  document.body.classList.toggle('billing-yearly', billingPeriod === 'yearly');
-  document.querySelectorAll('.period-opt').forEach(b => {
-    const active = b.dataset.period === billingPeriod;
-    b.classList.toggle('is-active', active);
-    b.setAttribute('aria-pressed', String(active));
-  });
-  // Re-evaluate each upgrade button's enabled state for the active period.
-  document.querySelectorAll('[data-upgrade]').forEach(btn => {
-    if (btn.dataset.current === '1' || !{{ 'true' if stripe_configured else 'false' }}) {
-      btn.disabled = true;
-      return;
-    }
-    const ok = billingPeriod === 'yearly'
-      ? btn.dataset.yearlyConfigured === '1'
-      : btn.dataset.monthlyConfigured === '1';
-    btn.disabled = !ok;
-    if (ok) {
-      btn.title = '';
-      btn.textContent = 'Upgrade to ' + btn.dataset.tierName;
-    } else {
-      btn.title = billingPeriod === 'yearly'
-        ? 'Yearly not configured'
-        : (btn.dataset.monthlyTitle || 'Monthly not configured');
-      btn.textContent = 'Not configured';
-    }
-  });
-}
-
-document.querySelectorAll('.period-opt').forEach(opt => {
-  opt.addEventListener('click', () => { billingPeriod = opt.dataset.period; applyPeriodUI(); });
-});
-applyPeriodUI();
-
-document.querySelectorAll('[data-upgrade]').forEach(btn => {
-  btn.addEventListener('click', async () => {
-    const tier = btn.dataset.upgrade;
-    const discount_code = (document.getElementById('promo-code-input')?.value || '').trim() || undefined;
-    const restore = TJ.btnLoading(btn, 'Redirecting…');
-    const data = await TJ.api.post('/api/billing/checkout', { tier, period: billingPeriod, discount_code },
-      { progress: true, progressLabel: 'Creating checkout…' });
-    restore();
-    if (data && data.url) window.location.href = data.url;
-  });
-});
-document.getElementById('manage-btn')?.addEventListener('click', async () => {
-  const btn = document.getElementById('manage-btn');
-  const restore = TJ.btnLoading(btn, 'Opening…');
-  const data = await TJ.api.post('/api/billing/portal', {});
-  restore();
-  if (data && data.url) window.location.href = data.url;
-});
-</script>
 {% endblock %}
