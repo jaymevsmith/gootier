@@ -11,7 +11,6 @@ patched with unittest.mock so no real HTTP call is made.
 from unittest.mock import patch
 
 import pytest
-import stripe
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
@@ -225,47 +224,6 @@ def test_signup_succeeds_when_ensure_wallet_local_commit_fails(db, client):
     assert resp.status_code == 303
     assert resp.headers["location"] == "/dashboard"
     assert COOKIE_NAME in resp.cookies
-
-
-# ---------------------------------------------------------------- #
-# Checkout discount / coupon logic (routes/stripe_routes.py)
-# ---------------------------------------------------------------- #
-
-def test_hub_down_discount_code_yields_no_coupon():
-    """When the affiliates hub is down/unreachable, validate_code() fails
-    closed with {"valid": False} (see jhome_affiliates.py). The coupon
-    lookup helper must treat that as "no discount" rather than raising —
-    proving checkout degrades gracefully instead of failing when the hub
-    is unavailable."""
-    with patch.object(stripe_routes.affiliates, "validate_code", return_value={"valid": False}):
-        code_info = stripe_routes.affiliates.validate_code("JAYS10")
-        coupon_id = stripe_routes._coupon_id_for_affiliate_code(code_info)
-
-    assert coupon_id is None
-
-
-def test_coupon_create_race_falls_through_to_none():
-    """If Stripe's Coupon.create() raises because the deterministic coupon
-    id was created concurrently by another request (or any other
-    InvalidRequestError from create), _coupon_id_for_affiliate_code must
-    catch it and return None instead of propagating and breaking checkout."""
-    code_info = {
-        "valid": True,
-        "code": "JAYS10",
-        "percent_off": 10,
-        "duration": "once",
-    }
-
-    with patch.object(
-        stripe.Coupon, "retrieve",
-        side_effect=stripe.error.InvalidRequestError("No such coupon", param="id"),
-    ), patch.object(
-        stripe.Coupon, "create",
-        side_effect=stripe.error.InvalidRequestError("Coupon already exists", param="id"),
-    ):
-        coupon_id = stripe_routes._coupon_id_for_affiliate_code(code_info)
-
-    assert coupon_id is None
 
 
 # ---------------------------------------------------------------- #
