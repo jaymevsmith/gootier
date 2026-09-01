@@ -52,6 +52,10 @@ class User(Base):
     # Populated on first Google-auth callback; used to re-link the account if the
     # user later changes the email on their Google profile.
     google_sub = Column(String, nullable=True, index=True, unique=True)
+    # Stable subject id from Jhome Auth, set the first time a Backoffice
+    # handoff resolves to this user. Unique where set, same convention as
+    # google_sub -- see POST /internal/handoff in routes/internal_routes.py.
+    jhome_sub = Column(String, nullable=True, index=True, unique=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     # Jhome Affiliates referral code captured from ?ref= at signup (nullable —
     # most users won't have one). See routes/auth_routes.py signup_submit.
@@ -412,6 +416,7 @@ def _upgrade_users(conn):
     _safe_add_column(conn, "users", "verify_token_expires_at",   "TIMESTAMP")
     _safe_add_column(conn, "users", "calendar_token",            "VARCHAR")
     _safe_add_column(conn, "users", "google_sub",                "VARCHAR")
+    _safe_add_column(conn, "users", "jhome_sub",                 "VARCHAR")
     _safe_add_column(conn, "users", "referral_code",             "VARCHAR")
     _safe_add_column(conn, "users", "jts_wallet_id",             "INTEGER")
 
