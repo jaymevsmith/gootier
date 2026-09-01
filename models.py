@@ -302,10 +302,12 @@ class HandoffToken(Base):
 
     id = Column(Integer, primary_key=True)
     token_hash = Column(String, unique=True, nullable=False, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     expires_at = Column(DateTime, nullable=False)
     used_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    user = relationship("User", backref="handoff_tokens")
 
 
 # --------------------------------------------------------------------------- #

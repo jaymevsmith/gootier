@@ -1,5 +1,5 @@
 """tests/test_handoff_tokens.py"""
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 
 from services.handoff import generate_token, hash_token, default_expiry
 
@@ -20,8 +20,9 @@ def test_hash_token_is_deterministic_sha256():
 
 
 def test_default_expiry_is_two_minutes_out():
-    before = datetime.now(timezone.utc)
+    from datetime import timedelta
+    before = datetime.utcnow()
     expiry = default_expiry()
-    after = datetime.now(timezone.utc)
+    after = datetime.utcnow()
     assert timedelta(minutes=1, seconds=55) <= (expiry - before) <= timedelta(minutes=2, seconds=5)
     assert expiry > after

@@ -1,12 +1,10 @@
-"""services/handoff.py
-
-Token generation and hashing for the Backoffice SSO handoff. Only the
+"""Token generation and hashing for the Backoffice SSO handoff. Only the
 SHA-256 hash is ever stored -- the plaintext token exists only in memory and
 in the one response that hands it back inside a consume_url.
 """
 import hashlib
 import secrets
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 
 TOKEN_TTL_MINUTES = 2
 
@@ -21,4 +19,4 @@ def hash_token(token: str) -> str:
 
 
 def default_expiry() -> datetime:
-    return datetime.now(timezone.utc) + timedelta(minutes=TOKEN_TTL_MINUTES)
+    return datetime.utcnow() + timedelta(minutes=TOKEN_TTL_MINUTES)
