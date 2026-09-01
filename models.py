@@ -295,6 +295,19 @@ class EnvConfig(Base):
     updated_by_name = Column(String, nullable=True)
 
 
+class HandoffToken(Base):
+    """Single-use token minted by POST /internal/handoff, redeemed by
+    GET /sso/consume. Hash-only -- see services/handoff.py."""
+    __tablename__ = "handoff_tokens"
+
+    id = Column(Integer, primary_key=True)
+    token_hash = Column(String, unique=True, nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    expires_at = Column(DateTime, nullable=False)
+    used_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
 # --------------------------------------------------------------------------- #
 # Idempotent migrations + seeds (run on every startup)
 # --------------------------------------------------------------------------- #
