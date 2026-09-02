@@ -235,11 +235,11 @@ housekeeping that was deliberately deferred out of the original SSO handoff
 security review (branch `gootier-connected-app`, merged as PR #6) to keep
 that PR scoped to the actual feature.
 
-**State:** committed on branch `handoff-token-reaper` (commit `caad86f`),
-built off a fresh worktree at `.worktrees/handoff-token-reaper` branched from
-`origin/main` — the primary checkout had unrelated uncommitted work in
-progress (billing/template changes) and was 21 commits behind, so it was left
-untouched. Not yet pushed, no PR opened, not deployed.
+**State:** merged to `main` as [PR #8](https://github.com/jaymevsmith/gootier/pull/8),
+commit `caad86f`, built off a fresh worktree at `.worktrees/handoff-token-reaper`
+branched from `origin/main` — the primary checkout had unrelated uncommitted
+work in progress (billing/template changes) and was 21 commits behind, so it
+was left untouched.
 
 **Tests:** `tests/test_handoff_reaper.py` (new, 3 cases: deletes past
 retention, keeps within-retention/valid rows, deletes long-used rows too).
@@ -248,9 +248,90 @@ Full suite: `python3 -m pytest -q` → 96 passed, 2 pre-existing failures in
 stashing this diff and re-running against unmodified `origin/main` — same 2
 failures, likely a network-dependent affiliate-reporting call).
 
-**Next step:** push the branch and open a PR against `main`, or fold into
-whatever the primary checkout's in-progress work becomes once that's
-resolved.
-
 **Redeploy command:** none — no deploy config change, ships with the next
 normal Railway deploy of the Gootier service once merged.
+
+
+## Session cookie now marked Secure in production (2026-09-01)
+
+**What changed:** picks up the "Deferred, flagged as follow-ups" item from
+the section above — no cookie that mints a logged-in session (`/login`,
+`/sso/consume`, signup auto-login, verify-email auto-login, Google OAuth
+callback) set `secure=True` anywhere in the app, so the session JWT cookie
+would be sent over plain HTTP in production. Added
+`auth.set_session_cookie(response, token)` as the single call site for
+minting it; it sets `secure=True` whenever `ENV` is `prod`/`production`
+(same check `auth.py` already used at boot for the `SECRET_KEY` guard). All
+five call sites in `routes/auth_routes.py` and `routes/oauth_routes.py` now
+go through it instead of hand-rolling `response.set_cookie(...)`.
+
+Also corrected `services/csrf.py`'s comment that claimed "samesite=lax +
+secure-in-prod is the main mitigation" for the CSRF double-submit cookie —
+that was never true; there is no secure-in-prod anywhere in the codebase
+before this change, and the CSRF cookie *still* isn't marked secure after
+it (out of scope, see below).
+
+**State:** [PR #7](https://github.com/jaymevsmith/gootier/pull/7),
+`fix-session-cookie-secure` → `main`, not yet merged. Branched off
+`origin/main` at `f87530a` (which already includes PR #6, the connected-app
+work above) in a dedicated worktree at
+`.worktrees/fix-session-cookie-secure`, because the primary checkout had
+unrelated uncommitted work (`routes/stripe_routes.py`,
+`services/token_wallet.py`, several billing templates) that predates this
+session and shouldn't be touched or bundled in.
+
+**Redeploy:** merge PR #7, then the normal Railway deploy for this service
+applies. No env var changes needed — this reads the existing `ENV` var,
+which every Gootier deployment already sets.
+
+**What's still open / found but deliberately not fixed here:**
+- `services/csrf.py`'s CSRF double-submit cookie still doesn't set
+  `secure=True` in prod. Only the session cookie was in scope for this fix
+  (that's what the original review flagged); the CSRF cookie has the same
+  class of gap and is a reasonable follow-up.
+- The two pre-existing test failures in `tests/test_affiliates_integration.py`
+  (`sqlite3.OperationalError: no such table: env_configs`) noted above are
+  still present, confirmed unrelated to this change.
+- No global `HTTPSRedirectMiddleware` / `TrustedHost` / proxy-header
+  middleware exists in `main.py` — this fix only makes the cookie *itself*
+  refuse to travel over HTTP once the browser is on HTTPS; it does not
+  force HTTPS on the connection in the first place. Confirm the Railway
+  edge/proxy terminates TLS and forwards `X-Forwarded-Proto` correctly
+  before relying on `secure=True` alone, since a misconfigured proxy could
+  make FastAPI think a request is HTTPS when it isn't.
+
+**Trap found the hard way:** the primary checkout was dirty and on local
+`main`, which was itself one commit *behind* `origin/main` (missing the
+just-merged PR #6). Editing there would have both entangled unrelated
+uncommitted work and started from a stale base. Always diff local `main`
+against `origin/main` and check `git status` before assuming the primary
+checkout is a safe place to branch from.
+
+**Also:** this file previously had `Write` used on it without reading the
+existing 218 lines first, which overwrote all of the above sections down
+to just this one. Caught immediately (unexpectedly large deletion count in
+the commit) and fixed with a follow-up commit restoring the original
+content with this section appended — no force-push, no history rewritten.
+Lesson: always `Read` this file before writing it, even when a `find` for
+it in the wrong directory (the primary checkout, not the worktree the
+branch was actually based on) suggests it doesn't exist yet.
+
+
+## CSRF double-submit cookie also marked Secure in production (2026-09-02)
+
+**What changed:** closed the follow-up flagged in the section above — the
+CSRF double-submit cookie (`services/csrf.py::CSRFCookieMiddleware`) had
+the exact same gap as the session cookie: no `secure=True` in prod, and its
+own comment falsely claimed "secure-in-prod" was already the mitigation.
+Added the same `os.getenv("ENV", "").lower() in {"prod", "production"}`
+check used by `auth.set_session_cookie` directly to its `response.set_cookie`
+call, and restored the comment to its original (now true) claim.
+
+**Verified:** new `tests/test_csrf_cookie_secure.py`, RED before the change
+(prod case asserted `Secure` present, failed against the real header) and
+GREEN after; same pattern as `tests/test_session_cookie_secure.py`. Full
+suite: 97 passed (up from 95), same 2 pre-existing unrelated failures.
+
+**State:** same [PR #7](https://github.com/jaymevsmith/gootier/pull/7),
+commit `98febc9`, still not merged. No remaining known cookie in this app
+missing `secure=True` in prod.

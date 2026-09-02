@@ -653,9 +653,7 @@ async def google_auth_callback(
     malformed input so a stray callback URL never auto-creates an account."""
     from datetime import datetime
     import secrets as _py_secrets
-    from auth import (
-        COOKIE_NAME, TOKEN_TTL_MINUTES, create_access_token, hash_password,
-    )
+    from auth import create_access_token, hash_password, set_session_cookie
     from services.flash import set_flash
 
     if error:
@@ -752,10 +750,7 @@ async def google_auth_callback(
 
     token = create_access_token(user.id)
     response = RedirectResponse(url="/dashboard", status_code=303)
-    response.set_cookie(
-        key=COOKIE_NAME, value=token, httponly=True, samesite="lax",
-        max_age=TOKEN_TTL_MINUTES * 60,
-    )
+    set_session_cookie(response, token)
     set_flash(
         response,
         "success",

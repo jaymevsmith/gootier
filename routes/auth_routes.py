@@ -8,7 +8,7 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
 from auth import (
-    COOKIE_NAME, TOKEN_TTL_MINUTES, create_access_token, hash_password,
+    COOKIE_NAME, create_access_token, hash_password, set_session_cookie,
     validate_email, validate_password, validate_username, verify_password,
 )
 from database import get_db
@@ -82,9 +82,7 @@ async def login_submit(
 
     token = create_access_token(user.id)
     response = RedirectResponse(url="/dashboard", status_code=303)
-    response.set_cookie(
-        key=COOKIE_NAME, value=token, httponly=True, samesite="lax", max_age=TOKEN_TTL_MINUTES * 60,
-    )
+    set_session_cookie(response, token)
     set_flash(response, "success", f"Welcome back, {user.nickname or user.username}!")
     log_action(db, user, "LOGIN", "User", str(user.id), detail="Login success")
     return response
@@ -122,10 +120,7 @@ def sso_consume(token: str = "", db: Session = Depends(get_db)):
     session_token = create_access_token(user.id)
     response = RedirectResponse(url="/dashboard", status_code=303)
     response.headers["Cache-Control"] = "no-store"
-    response.set_cookie(
-        key=COOKIE_NAME, value=session_token, httponly=True, samesite="lax",
-        max_age=TOKEN_TTL_MINUTES * 60,
-    )
+    set_session_cookie(response, session_token)
     set_flash(response, "success", f"Welcome, {user.nickname or user.username}!")
     log_action(db, user, "BACKOFFICE_HANDOFF_CONSUME", "User", str(user.id))
     return response
@@ -217,9 +212,7 @@ async def signup_submit(
 
     token = create_access_token(user.id)
     response = RedirectResponse(url="/dashboard", status_code=303)
-    response.set_cookie(
-        key=COOKIE_NAME, value=token, httponly=True, samesite="lax", max_age=TOKEN_TTL_MINUTES * 60,
-    )
+    set_session_cookie(response, token)
     set_flash(response, "success", "Welcome to Gootier! Check your email to verify your address.")
     return response
 
@@ -294,9 +287,7 @@ async def verify_email_submit(
         {"error": None, "token": "", "done": True, "email": user.email,
          "csrf_token": get_or_create_token(request)},
     )
-    response.set_cookie(
-        key=COOKIE_NAME, value=access, httponly=True, samesite="lax", max_age=TOKEN_TTL_MINUTES * 60,
-    )
+    set_session_cookie(response, access)
     return response
 
 
