@@ -180,3 +180,62 @@ def test_case_variant_duplicate_accounts_are_refused_not_crashed(client, monkeyp
         headers={"X-Internal-Key": "test-internal-key"},
     )
     assert resp.status_code == 409
+
+
+def test_handoff_for_a_new_email_creates_a_user(client, monkeypatch):
+    c, TestingSession = client
+    _configure(monkeypatch)
+    resp = c.post(
+        "/internal/handoff",
+        json={"email": "newperson@example.com", "name": "New Person", "jhome_sub": "sub-2"},
+        headers={"X-Internal-Key": "test-internal-key"},
+    )
+    assert resp.status_code == 200
+    s = TestingSession()
+    user = s.query(User).filter(User.email == "newperson@example.com").one()
+    assert user.username == "newperson"
+    assert user.role == "client"
+    assert user.tier == "trial"
+    assert user.is_active is True
+    assert user.is_verified is True
+    assert user.jhome_sub == "sub-2"
+    assert user.hashed_password  # set, but not to anything guessable
+    s.close()
+
+
+def test_handoff_username_collision_appends_a_suffix(client, monkeypatch):
+    c, TestingSession = client
+    _configure(monkeypatch)
+    s = TestingSession()
+    s.add(User(username="sam", email="sam-original@example.com", hashed_password="x",
+                role="client", tier="trial"))
+    s.commit()
+    s.close()
+
+    resp = c.post(
+        "/internal/handoff",
+        json={"email": "sam@example.com"},
+        headers={"X-Internal-Key": "test-internal-key"},
+    )
+    assert resp.status_code == 200
+    s = TestingSession()
+    user = s.query(User).filter(User.email == "sam@example.com").one()
+    assert user.username == "sam2"
+    s.close()
+
+
+def test_password_login_never_matches_a_handoff_created_users_password(client, monkeypatch):
+    """The stored hash is real bcrypt, just of a value nobody typed."""
+    from auth import verify_password
+    c, TestingSession = client
+    _configure(monkeypatch)
+    c.post(
+        "/internal/handoff",
+        json={"email": "nopassword@example.com"},
+        headers={"X-Internal-Key": "test-internal-key"},
+    )
+    s = TestingSession()
+    user = s.query(User).filter(User.email == "nopassword@example.com").one()
+    for guess in ("", "password", "nopassword@example.com", "12345678"):
+        assert not verify_password(guess, user.hashed_password)
+    s.close()

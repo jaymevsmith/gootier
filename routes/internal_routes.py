@@ -13,8 +13,10 @@ import secrets
 from fastapi import APIRouter, Depends, Header, HTTPException, Response
 from pydantic import BaseModel
 from sqlalchemy import func
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from auth import hash_password
 from database import get_db
 from models import HandoffToken, User, log_action
 from services.env_config import get_env
@@ -44,6 +46,53 @@ def require_internal_key(x_internal_key: str = Header(default="")) -> None:
         raise HTTPException(status_code=401, detail="invalid internal key")
 
 
+_USERNAME_RE = re.compile(r"[^a-z0-9._-]")
+
+
+def _derive_username(db: Session, email: str) -> str:
+    """Email local-part, lowercased, sanitized to Gootier's allowed username
+    charset. Appends 2, 3, ... on collision, checked against the DB up
+    front (the actual uniqueness race is handled by the caller's retry
+    loop, not here)."""
+    base = _USERNAME_RE.sub("", email.split("@", 1)[0].lower()) or "user"
+    candidate = base
+    suffix = 2
+    while db.query(User).filter(User.username == candidate).first() is not None:
+        candidate = f"{base}{suffix}"
+        suffix += 1
+        if suffix > 20:
+            raise HTTPException(status_code=500, detail="could not allocate a username")
+    return candidate
+
+
+def _create_user(db: Session, email: str, jhome_sub: str | None) -> User:
+    """Find-or-create with a bounded retry for the rare concurrent-username
+    race: two handoffs for different brand-new emails that happen to derive
+    the same base username, racing on the same candidate slot."""
+    for attempt in range(3):
+        username = _derive_username(db, email)
+        user = User(
+            username=username,
+            email=email,
+            hashed_password=hash_password(secrets.token_urlsafe(32)),
+            role="client",
+            tier="trial",
+            is_active=True,
+            is_verified=True,
+            jhome_sub=jhome_sub,
+        )
+        db.add(user)
+        try:
+            db.commit()
+            db.refresh(user)
+            return user
+        except IntegrityError:
+            db.rollback()
+            if attempt == 2:
+                raise HTTPException(status_code=500, detail="could not allocate a username")
+    raise HTTPException(status_code=500, detail="could not allocate a username")
+
+
 @router.post("/internal/handoff", dependencies=[Depends(require_internal_key)])
 def handoff(req: HandoffRequest, response: Response, db: Session = Depends(get_db)) -> dict:
     response.headers["Cache-Control"] = "no-store"
@@ -63,11 +112,7 @@ def handoff(req: HandoffRequest, response: Response, db: Session = Depends(get_d
     user = matches[0] if matches else None
 
     if user is None:
-        # A later task replaces this with real new-user creation. None of
-        # this task's tests exercise a brand-new email, so this 501 is
-        # never hit yet -- it exists only so the endpoint has a defined,
-        # non-crashing response for the branch until that task fills it in.
-        raise HTTPException(status_code=501, detail="new-user creation not implemented yet")
+        user = _create_user(db, email, req.jhome_sub)
 
     if user.has_role("admin"):
         log.warning("handoff refused: user %s has platform admin access", user.id)
