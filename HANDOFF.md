@@ -124,3 +124,95 @@ tolerates the `domains` field Backoffice sends to every connected app
 unconditionally, durability of the manually-flipped `shares_customer_balance`
 flag, and whether anything outside `/sso/consume` could mint a session. See
 this file's next update for results once that review lands.
+
+
+## Whole-branch review results and fixes — 2026-09-02
+
+The dispatched review (previous section) found **two severe seam bugs**,
+invisible to every per-task review that preceded it because each sits at
+the boundary between a touched line and untouched context around it —
+exactly what a whole-branch pass exists to catch.
+
+**1. Wallet grouping was broken for the feature's actual common case.**
+`services/token_wallet.py::ensure_wallet` has a pre-existing cache
+short-circuit (`if user.jts_wallet_id is not None: return ...`). Every
+Gootier user who already had an account — normal signup already creates a
+wallet — hit this short-circuit and NEVER reached the Token Service call
+that applies `customer_ref` grouping. Only a user who was brand-new at the
+exact moment of the handoff (no wallet yet) got grouped correctly, by
+accident of ordering. The manually-flipped `shares_customer_balance` flag
+(previous section) accomplished nothing for the target population — real
+existing Gootier customers connecting their account via Jhome would never
+have joined the shared balance. Fixed with a new
+`link_wallet_to_customer(db, user)` that always calls the Token Service
+(idempotent get-or-create on that end), used by the handoff route in place
+of `ensure_wallet`. Verified with a genuine control: the reviewer
+temporarily restored the old short-circuited path and confirmed zero Token
+Service calls reproduced the exact bug, then confirmed the fix produces
+exactly one call with the right `customer_ref`.
+
+**2. Every refusal rendered as a generic "temporarily unavailable" 502,
+and suspended accounts triggered a false credential-misconfiguration
+alert.** The Backoffice's shared handoff client expects `detail` to be a
+dict carrying a machine-readable `"error"` code (matching Jhome Auth's
+convention); Gootier's five refusals all used plain strings, so none of
+them ever matched the Backoffice's `_REFUSAL_COPY` lookup — every one fell
+through to the generic outage page regardless of the real, permanent, and
+often actionable reason. Separately, the deactivated-user refusal used
+HTTP 401 — the exact status the Backoffice reserves for "the shared
+internal key is wrong" — so every suspended Gootier customer who clicked
+the tile fired an ERROR-level "handoff misconfigured" alert with no real
+misconfiguration behind it. Fixed: real error codes copied from Jhome
+Auth's reference implementation (`account_inactive`, `linked_elsewhere`,
+`unverified_caller_email`, `ambiguous_identity` — all four are genuine
+existing fleet codes, not invented) plus one Gootier-specific code
+(`admin_account_not_supported`, no other connected app has needed to
+refuse on admin role yet — noted in a comment that the Backoffice's
+`_REFUSAL_COPY` has no specific entry for it yet, so it renders the
+generic-but-still-terminal fallback page rather than a 502 until that copy
+is added on the Backoffice side). Deactivated-user status changed 401 →
+403, matching Jhome Auth's own convention for `account_inactive`.
+
+**3. `email_verified` was silently ignored.** The Backoffice sends this
+field as an explicit assertion "safe to bind an existing account by email
+address"; Gootier's `HandoffRequest` didn't even declare it, so it was
+Pydantic-dropped, and Gootier would adopt `jhome_sub` onto an existing
+account matched by email with no check that the Backoffice actually
+vouched for that email. Currently latent (Jhome Auth's own `/authorize`
+already blocks unverified sessions from reaching a connected app), but the
+fail-closed default the Backoffice's field exists to provide was defeated
+on Gootier's end. Fixed: the field is now declared, and an EXISTING-user
+match with `email_verified=False` is refused (409
+`unverified_caller_email`, matching Jhome Auth's own code for this exact
+condition) before any binding happens. New-user creation is deliberately
+NOT gated by this — Jhome Auth's own gate already covers that path.
+
+**4.** Added a regression test posting the real 5-field Backoffice payload
+shape (`email, name, jhome_sub, domains, email_verified`) end-to-end,
+pinning that the unused `domains` field stays silently dropped (Pydantic's
+default `extra='ignore'`) rather than crashing — confirmed there's no
+strict-mode config anywhere in this model that a future edit might
+accidentally introduce.
+
+**Also confirmed clean by the same review** (no fix needed): payload field
+names agree exactly between the two repos; nothing outside `/sso/consume`
+can mint a session; `GOOTIER_INTERNAL_KEY` is spelled identically in both
+repos' source.
+
+Fix commit `6acad43` (rebased onto the docs commit above after a local
+worktree/remote divergence during the fix dispatch — caught before it
+became a real problem, nothing was force-pushed or lost). Re-reviewed
+(spec + code quality) after the fix: both passed, spec review included an
+independent empirical proof that the wallet-grouping bug was genuinely
+real and is genuinely fixed, not just claimed. 93 tests passing (from 84),
+same 2 pre-existing unrelated failures.
+
+**Still open, correctly out of scope for this fix:** the Backoffice's own
+`_REFUSAL_COPY` has no entry for `admin_account_not_supported` yet (falls
+through to a generic-but-terminal fallback page, not a 502 — acceptable,
+but a Backoffice-side follow-up to add proper copy). The real account
+created during Task 14's deploy verification (`tradingjay101@gmail.com`)
+had its wallet manually re-linked to the correct customer group at deploy
+time, BEFORE this fix existed — that manual correction remains correct and
+doesn't need redoing, since `link_wallet_to_customer` would now produce
+the identical result on its own for any future handoff.
