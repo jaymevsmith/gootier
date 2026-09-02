@@ -344,3 +344,27 @@ def test_unset_jhome_sub_on_an_existing_user_gets_adopted(client, monkeypatch):
     user = s.query(User).filter(User.email == "fresh@example.com").one()
     assert user.jhome_sub == "sub-newly-linked"
     s.close()
+
+
+def test_admin_jhome_sub_adoption_does_not_persist_on_refusal(client, monkeypatch):
+    """A refused handoff (admin account) must leave zero side effects --
+    including not silently linking jhome_sub before the refusal fires."""
+    c, TestingSession = client
+    _configure(monkeypatch)
+    s = TestingSession()
+    s.add(User(username="adminuser", email="admin2@example.com", hashed_password="x",
+                role="admin", tier="trial"))  # jhome_sub unset
+    s.commit()
+    s.close()
+
+    resp = c.post(
+        "/internal/handoff",
+        json={"email": "admin2@example.com", "jhome_sub": "sub-should-not-stick"},
+        headers={"X-Internal-Key": "test-internal-key"},
+    )
+    assert resp.status_code == 403
+
+    s = TestingSession()
+    user = s.query(User).filter(User.email == "admin2@example.com").one()
+    assert user.jhome_sub is None  # must NOT have been persisted
+    s.close()

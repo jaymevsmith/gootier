@@ -118,10 +118,9 @@ def handoff(req: HandoffRequest, response: Response, db: Session = Depends(get_d
         user = _create_user(db, email, req.jhome_sub, req.name)
     elif req.jhome_sub and not user.jhome_sub:
         user.jhome_sub = req.jhome_sub
-        db.commit()
     elif req.jhome_sub and user.jhome_sub and user.jhome_sub != req.jhome_sub:
         log.warning(
-            "handoff for user %s carried jhome_sub %s but it already has %s; refusing",
+            "handoff refused: user %s carried jhome_sub %s but it already has %s",
             user.id, req.jhome_sub, user.jhome_sub,
         )
         raise HTTPException(status_code=409, detail="user is linked to a different Jhome subject")
