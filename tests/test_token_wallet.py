@@ -15,8 +15,8 @@ class FakeJTSClient:
         self.raise_on_debit = raise_on_debit
         self.raise_on_ensure_wallet = raise_on_ensure_wallet
 
-    def ensure_wallet(self, external_user_id, email=""):
-        self.ensure_wallet_calls.append(external_user_id)
+    def ensure_wallet(self, external_user_id, email="", customer_ref=None):
+        self.ensure_wallet_calls.append((external_user_id, customer_ref))
         if self.raise_on_ensure_wallet is not None:
             raise self.raise_on_ensure_wallet
         return 999
@@ -49,11 +49,33 @@ def test_ensure_wallet_caches_id_on_user(db, monkeypatch):
 
     assert wallet_id == 999
     assert user.jts_wallet_id == 999
-    assert fake.ensure_wallet_calls == [str(user.id)]
+    assert fake.ensure_wallet_calls == [(str(user.id), None)]
 
     # second call doesn't hit JTS again
     token_wallet.ensure_wallet(db, user)
-    assert fake.ensure_wallet_calls == [str(user.id)]
+    assert fake.ensure_wallet_calls == [(str(user.id), None)]
+
+
+def test_ensure_wallet_forwards_customer_ref_when_present(db, monkeypatch):
+    fake = FakeJTSClient()
+    monkeypatch.setattr(token_wallet, "_client", lambda: fake)
+    user = _user(db)
+    user.jhome_sub = "sub-abc"
+    db.commit()
+
+    token_wallet.ensure_wallet(db, user)
+
+    assert fake.ensure_wallet_calls == [(str(user.id), "sub-abc")]
+
+
+def test_ensure_wallet_sends_no_customer_ref_when_jhome_sub_is_unset(db, monkeypatch):
+    fake = FakeJTSClient()
+    monkeypatch.setattr(token_wallet, "_client", lambda: fake)
+    user = _user(db)  # jhome_sub defaults to None
+
+    token_wallet.ensure_wallet(db, user)
+
+    assert fake.ensure_wallet_calls == [(str(user.id), None)]
 
 
 def test_check_sufficient_raises_402_when_estimate_exceeds_balance(db, monkeypatch):

@@ -33,7 +33,10 @@ def ensure_wallet(db: Session, user: User) -> int:
     wasteful. Not fixed here, matching this migration's other known tradeoffs."""
     if user.jts_wallet_id is not None:
         return user.jts_wallet_id
-    wallet_id = _client().ensure_wallet(external_user_id=str(user.id), email=user.email)
+    wallet_id = _client().ensure_wallet(
+        external_user_id=str(user.id), email=user.email,
+        customer_ref=user.jhome_sub,
+    )
     user.jts_wallet_id = wallet_id
     db.commit()
     return wallet_id

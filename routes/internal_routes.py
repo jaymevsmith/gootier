@@ -22,6 +22,7 @@ from models import HandoffToken, User, log_action
 from routes.oauth_routes import _unique_username_from_email
 from services.env_config import get_env
 from services.handoff import generate_token, hash_token, default_expiry
+from services import token_wallet
 
 log = logging.getLogger("gootier.internal_handoff")
 
@@ -128,6 +129,12 @@ def handoff(req: HandoffRequest, response: Response, db: Session = Depends(get_d
     if user.has_role("admin"):
         log.warning("handoff refused: user %s has platform admin access", user.id)
         raise HTTPException(status_code=403, detail="handoff refused")
+
+    if user.jhome_sub:
+        try:
+            token_wallet.ensure_wallet(db, user)
+        except Exception:  # noqa: BLE001 -- a login path must never fail on this
+            log.exception("could not link wallet for user %s", user.id)
 
     token = generate_token()
     db.add(HandoffToken(token_hash=hash_token(token), user_id=user.id,

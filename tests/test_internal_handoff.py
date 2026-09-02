@@ -368,3 +368,39 @@ def test_admin_jhome_sub_adoption_does_not_persist_on_refusal(client, monkeypatc
     user = s.query(User).filter(User.email == "admin2@example.com").one()
     assert user.jhome_sub is None  # must NOT have been persisted
     s.close()
+
+
+def test_wallet_link_failure_does_not_block_the_handoff(client, monkeypatch):
+    c, TestingSession = client
+    _configure(monkeypatch)
+
+    def boom(db, user):
+        raise RuntimeError("Token Service is down")
+
+    monkeypatch.setattr("routes.internal_routes.token_wallet.ensure_wallet", boom)
+
+    resp = c.post(
+        "/internal/handoff",
+        json={"email": "walletfail@example.com", "jhome_sub": "sub-fail"},
+        headers={"X-Internal-Key": "test-internal-key"},
+    )
+    assert resp.status_code == 200
+    assert "consume_url" in resp.json()
+
+
+def test_wallet_link_is_skipped_when_jhome_sub_is_absent(client, monkeypatch):
+    """No customer_ref to link means nothing to call -- confirm ensure_wallet
+    is never even invoked, not just that it doesn't block."""
+    c, TestingSession = client
+    _configure(monkeypatch)
+    calls = []
+    monkeypatch.setattr("routes.internal_routes.token_wallet.ensure_wallet",
+                        lambda db, user: calls.append(user.id))
+
+    resp = c.post(
+        "/internal/handoff",
+        json={"email": "nosub@example.com"},
+        headers={"X-Internal-Key": "test-internal-key"},
+    )
+    assert resp.status_code == 200
+    assert calls == []
