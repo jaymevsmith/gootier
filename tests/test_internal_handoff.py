@@ -224,6 +224,39 @@ def test_handoff_username_collision_appends_a_suffix(client, monkeypatch):
     s.close()
 
 
+def test_jhome_sub_already_bound_to_a_different_email_is_refused(client, monkeypatch):
+    c, TestingSession = client
+    _configure(monkeypatch)
+    s = TestingSession()
+    s.add(User(username="oldemail", email="old@example.com", hashed_password="x",
+                role="client", tier="trial", jhome_sub="sub-moved"))
+    s.commit()
+    s.close()
+
+    resp = c.post(
+        "/internal/handoff",
+        json={"email": "new@example.com", "jhome_sub": "sub-moved"},
+        headers={"X-Internal-Key": "test-internal-key"},
+    )
+    assert resp.status_code == 409
+
+
+def test_derived_username_never_contains_a_dot(client, monkeypatch):
+    from auth import validate_username
+    c, TestingSession = client
+    _configure(monkeypatch)
+    resp = c.post(
+        "/internal/handoff",
+        json={"email": "first.last@example.com"},
+        headers={"X-Internal-Key": "test-internal-key"},
+    )
+    assert resp.status_code == 200
+    s = TestingSession()
+    user = s.query(User).filter(User.email == "first.last@example.com").one()
+    assert validate_username(user.username) is None  # None == valid, per this codebase's convention
+    s.close()
+
+
 def test_password_login_never_matches_a_handoff_created_users_password(client, monkeypatch):
     """The stored hash is real bcrypt, just of a value nobody typed."""
     from auth import verify_password

@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 from auth import hash_password
 from database import get_db
 from models import HandoffToken, User, log_action
+from routes.oauth_routes import _unique_username_from_email
 from services.env_config import get_env
 from services.handoff import generate_token, hash_token, default_expiry
 
@@ -46,31 +47,12 @@ def require_internal_key(x_internal_key: str = Header(default="")) -> None:
         raise HTTPException(status_code=401, detail="invalid internal key")
 
 
-_USERNAME_RE = re.compile(r"[^a-z0-9._-]")
-
-
-def _derive_username(db: Session, email: str) -> str:
-    """Email local-part, lowercased, sanitized to Gootier's allowed username
-    charset. Appends 2, 3, ... on collision, checked against the DB up
-    front (the actual uniqueness race is handled by the caller's retry
-    loop, not here)."""
-    base = _USERNAME_RE.sub("", email.split("@", 1)[0].lower()) or "user"
-    candidate = base
-    suffix = 2
-    while db.query(User).filter(User.username == candidate).first() is not None:
-        candidate = f"{base}{suffix}"
-        suffix += 1
-        if suffix > 20:
-            raise HTTPException(status_code=500, detail="could not allocate a username")
-    return candidate
-
-
-def _create_user(db: Session, email: str, jhome_sub: str | None) -> User:
+def _create_user(db: Session, email: str, jhome_sub: str | None, name: str | None) -> User:
     """Find-or-create with a bounded retry for the rare concurrent-username
     race: two handoffs for different brand-new emails that happen to derive
     the same base username, racing on the same candidate slot."""
     for attempt in range(3):
-        username = _derive_username(db, email)
+        username = _unique_username_from_email(db, email)
         user = User(
             username=username,
             email=email,
@@ -79,12 +61,15 @@ def _create_user(db: Session, email: str, jhome_sub: str | None) -> User:
             tier="trial",
             is_active=True,
             is_verified=True,
+            nickname=name or username,
             jhome_sub=jhome_sub,
         )
         db.add(user)
         try:
             db.commit()
             db.refresh(user)
+            log_action(db, user, "SIGNUP", "User", str(user.id),
+                       detail="Backoffice handoff -- new account")
             return user
         except IntegrityError:
             db.rollback()
@@ -111,8 +96,22 @@ def handoff(req: HandoffRequest, response: Response, db: Session = Depends(get_d
         raise HTTPException(status_code=409, detail="ambiguous account")
     user = matches[0] if matches else None
 
+    if user is None and req.jhome_sub:
+        existing_sub_holder = db.query(User).filter(User.jhome_sub == req.jhome_sub).first()
+        if existing_sub_holder is not None:
+            log.warning(
+                "handoff refused: jhome_sub %s already belongs to a different user (%s), "
+                "but the request's email does not match that user",
+                req.jhome_sub, existing_sub_holder.id,
+            )
+            raise HTTPException(status_code=409, detail="user is linked to a different email")
+
     if user is None:
-        user = _create_user(db, email, req.jhome_sub)
+        # NOTE: a concurrent-same-email-insert race (two handoffs for the
+        # exact same brand-new email at once) is not self-healed here --
+        # genuinely rarer than the jhome_sub-mismatch case above, and not
+        # worth more retry machinery for the marginal benefit.
+        user = _create_user(db, email, req.jhome_sub, req.name)
 
     if user.has_role("admin"):
         log.warning("handoff refused: user %s has platform admin access", user.id)
