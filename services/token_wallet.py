@@ -42,6 +42,35 @@ def ensure_wallet(db: Session, user: User) -> int:
     return wallet_id
 
 
+def link_wallet_to_customer(db: Session, user: User) -> int:
+    """Apply (or re-apply) customer_ref grouping for this user's JTS wallet.
+
+    Unlike ensure_wallet, this ALWAYS calls the Token Service -- even when
+    user.jts_wallet_id is already cached. The Token Service's POST /wallets is
+    an idempotent get-or-create, so calling it again for an existing wallet is
+    safe, and it is exactly what's needed to apply customer_ref grouping to a
+    user whose wallet was created BEFORE they ever linked their Jhome identity
+    (the common case: an existing Gootier customer connecting their account via
+    the Backoffice handoff -- their wallet was minted at signup, so
+    ensure_wallet's cache short-circuit would return immediately and the
+    grouping call would never happen).
+
+    ensure_wallet's cache short-circuit is correct for its OWN callers (balance
+    checks, debits -- repeated calls there would be wasteful and grouping is
+    not their concern), but wrong for this one. Same reasoning as RingBack's
+    internal_api handoff: gating grouping on the first-sight jhome_sub
+    transition makes it one-shot, so a single timeout leaves the user linked
+    but ungrouped forever with nothing that could ever retry."""
+    wallet_id = _client().ensure_wallet(
+        external_user_id=str(user.id), email=user.email,
+        customer_ref=user.jhome_sub,
+    )
+    if user.jts_wallet_id is None:
+        user.jts_wallet_id = wallet_id
+        db.commit()
+    return wallet_id
+
+
 def balance_tokens(db: Session, user: User) -> int:
     wallet_id = ensure_wallet(db, user)
     return _client().get_balance(wallet_id)

@@ -78,6 +78,59 @@ def test_ensure_wallet_sends_no_customer_ref_when_jhome_sub_is_unset(db, monkeyp
     assert fake.ensure_wallet_calls == [(str(user.id), None)]
 
 
+def test_link_wallet_to_customer_calls_the_service_even_when_a_wallet_is_already_cached(
+        db, monkeypatch):
+    """The exact bug this function exists to fix: a user who already has a
+    wallet (e.g. from normal signup) must still get grouped when their
+    jhome_sub is set later. ensure_wallet would short-circuit on the cached id
+    and never send customer_ref at all."""
+    fake = FakeJTSClient()
+    monkeypatch.setattr(token_wallet, "_client", lambda: fake)
+    user = _user(db)
+    user.jts_wallet_id = 555  # simulates a wallet already created at signup
+    user.jhome_sub = "sub-existing-user"
+    db.commit()
+
+    result = token_wallet.link_wallet_to_customer(db, user)
+
+    assert fake.ensure_wallet_calls == [(str(user.id), "sub-existing-user")]
+    # FakeJTSClient always answers 999 -- it keeps no per-user wallet map --
+    # so the returned id is the service's answer, not the cached 555.
+    assert result == 999
+
+
+def test_link_wallet_to_customer_does_not_overwrite_an_already_cached_wallet_id(
+        db, monkeypatch):
+    fake = FakeJTSClient()
+    monkeypatch.setattr(token_wallet, "_client", lambda: fake)
+    user = _user(db)
+    user.jts_wallet_id = 555
+    user.jhome_sub = "sub-x"
+    db.commit()
+
+    token_wallet.link_wallet_to_customer(db, user)
+
+    db.refresh(user)
+    assert user.jts_wallet_id == 555  # unchanged -- FakeJTSClient returns 999
+
+
+def test_link_wallet_to_customer_caches_the_id_when_there_is_none_yet(db, monkeypatch):
+    """A brand-new user created by the handoff itself still gets the id
+    persisted, exactly as ensure_wallet would have."""
+    fake = FakeJTSClient()
+    monkeypatch.setattr(token_wallet, "_client", lambda: fake)
+    user = _user(db)
+    user.jhome_sub = "sub-brand-new"
+    db.commit()
+    assert user.jts_wallet_id is None
+
+    result = token_wallet.link_wallet_to_customer(db, user)
+
+    assert result == 999
+    db.refresh(user)
+    assert user.jts_wallet_id == 999
+
+
 def test_check_sufficient_raises_402_when_estimate_exceeds_balance(db, monkeypatch):
     fake = FakeJTSClient(balance=1000)
     monkeypatch.setattr(token_wallet, "_client", lambda: fake)

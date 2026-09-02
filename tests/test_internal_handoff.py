@@ -91,7 +91,8 @@ def test_handoff_for_an_existing_user_returns_a_consume_url(client, monkeypatch)
 
     resp = c.post(
         "/internal/handoff",
-        json={"email": "jane@example.com", "name": "Jane", "jhome_sub": "sub-1"},
+        json={"email": "jane@example.com", "name": "Jane", "jhome_sub": "sub-1",
+              "email_verified": True},
         headers={"X-Internal-Key": "test-internal-key"},
     )
     assert resp.status_code == 200
@@ -111,10 +112,11 @@ def test_admin_account_handoff_is_refused(client, monkeypatch):
 
     resp = c.post(
         "/internal/handoff",
-        json={"email": "admin@example.com"},
+        json={"email": "admin@example.com", "email_verified": True},
         headers={"X-Internal-Key": "test-internal-key"},
     )
     assert resp.status_code == 403
+    assert resp.json()["detail"] == {"error": "admin_account_not_supported"}
 
 
 def test_handoff_fails_closed_when_the_key_is_unconfigured(client, monkeypatch):
@@ -157,7 +159,7 @@ def test_email_lookup_is_case_insensitive(client, monkeypatch):
 
     resp = c.post(
         "/internal/handoff",
-        json={"email": "mixedcase@example.com"},
+        json={"email": "mixedcase@example.com", "email_verified": True},
         headers={"X-Internal-Key": "test-internal-key"},
     )
     assert resp.status_code == 200
@@ -176,10 +178,11 @@ def test_case_variant_duplicate_accounts_are_refused_not_crashed(client, monkeyp
 
     resp = c.post(
         "/internal/handoff",
-        json={"email": "dupe@example.com"},
+        json={"email": "dupe@example.com", "email_verified": True},
         headers={"X-Internal-Key": "test-internal-key"},
     )
     assert resp.status_code == 409
+    assert resp.json()["detail"] == {"error": "ambiguous_identity"}
 
 
 def test_handoff_for_a_new_email_creates_a_user(client, monkeypatch):
@@ -239,6 +242,7 @@ def test_jhome_sub_already_bound_to_a_different_email_is_refused(client, monkeyp
         headers={"X-Internal-Key": "test-internal-key"},
     )
     assert resp.status_code == 409
+    assert resp.json()["detail"] == {"error": "linked_elsewhere"}
 
 
 def test_derived_username_never_contains_a_dot(client, monkeypatch):
@@ -274,7 +278,11 @@ def test_password_login_never_matches_a_handoff_created_users_password(client, m
     s.close()
 
 
-def test_deactivated_user_is_refused(client, monkeypatch):
+def test_deactivated_user_is_refused_with_403_not_401(client, monkeypatch):
+    """403, not 401. The Backoffice logs an ERROR-level "handoff misconfigured
+    (401)" on a 401 -- a false credential-rotation alarm every time a
+    suspended customer clicks the tile. Matches Jhome Auth's own 403 +
+    account_inactive for this condition."""
     c, TestingSession = client
     _configure(monkeypatch)
     s = TestingSession()
@@ -285,10 +293,11 @@ def test_deactivated_user_is_refused(client, monkeypatch):
 
     resp = c.post(
         "/internal/handoff",
-        json={"email": "gone@example.com"},
+        json={"email": "gone@example.com", "email_verified": True},
         headers={"X-Internal-Key": "test-internal-key"},
     )
-    assert resp.status_code == 401
+    assert resp.status_code == 403
+    assert resp.json()["detail"] == {"error": "account_inactive"}
 
 
 def test_existing_user_jhome_sub_conflict_is_refused(client, monkeypatch):
@@ -302,10 +311,12 @@ def test_existing_user_jhome_sub_conflict_is_refused(client, monkeypatch):
 
     resp = c.post(
         "/internal/handoff",
-        json={"email": "linked@example.com", "jhome_sub": "sub-different"},
+        json={"email": "linked@example.com", "jhome_sub": "sub-different",
+              "email_verified": True},
         headers={"X-Internal-Key": "test-internal-key"},
     )
     assert resp.status_code == 409
+    assert resp.json()["detail"] == {"error": "linked_elsewhere"}
 
 
 def test_matching_jhome_sub_on_an_existing_user_is_not_a_conflict(client, monkeypatch):
@@ -319,7 +330,8 @@ def test_matching_jhome_sub_on_an_existing_user_is_not_a_conflict(client, monkey
 
     resp = c.post(
         "/internal/handoff",
-        json={"email": "samesub@example.com", "jhome_sub": "sub-same"},
+        json={"email": "samesub@example.com", "jhome_sub": "sub-same",
+              "email_verified": True},
         headers={"X-Internal-Key": "test-internal-key"},
     )
     assert resp.status_code == 200
@@ -336,7 +348,8 @@ def test_unset_jhome_sub_on_an_existing_user_gets_adopted(client, monkeypatch):
 
     resp = c.post(
         "/internal/handoff",
-        json={"email": "fresh@example.com", "jhome_sub": "sub-newly-linked"},
+        json={"email": "fresh@example.com", "jhome_sub": "sub-newly-linked",
+              "email_verified": True},
         headers={"X-Internal-Key": "test-internal-key"},
     )
     assert resp.status_code == 200
@@ -359,7 +372,8 @@ def test_admin_jhome_sub_adoption_does_not_persist_on_refusal(client, monkeypatc
 
     resp = c.post(
         "/internal/handoff",
-        json={"email": "admin2@example.com", "jhome_sub": "sub-should-not-stick"},
+        json={"email": "admin2@example.com", "jhome_sub": "sub-should-not-stick",
+              "email_verified": True},
         headers={"X-Internal-Key": "test-internal-key"},
     )
     assert resp.status_code == 403
@@ -377,7 +391,7 @@ def test_wallet_link_failure_does_not_block_the_handoff(client, monkeypatch):
     def boom(db, user):
         raise RuntimeError("Token Service is down")
 
-    monkeypatch.setattr("routes.internal_routes.token_wallet.ensure_wallet", boom)
+    monkeypatch.setattr("routes.internal_routes.token_wallet.link_wallet_to_customer", boom)
 
     resp = c.post(
         "/internal/handoff",
@@ -389,12 +403,12 @@ def test_wallet_link_failure_does_not_block_the_handoff(client, monkeypatch):
 
 
 def test_wallet_link_is_skipped_when_jhome_sub_is_absent(client, monkeypatch):
-    """No customer_ref to link means nothing to call -- confirm ensure_wallet
+    """No customer_ref to link means nothing to call -- confirm link_wallet_to_customer
     is never even invoked, not just that it doesn't block."""
     c, TestingSession = client
     _configure(monkeypatch)
     calls = []
-    monkeypatch.setattr("routes.internal_routes.token_wallet.ensure_wallet",
+    monkeypatch.setattr("routes.internal_routes.token_wallet.link_wallet_to_customer",
                         lambda db, user: calls.append(user.id))
 
     resp = c.post(
@@ -404,3 +418,142 @@ def test_wallet_link_is_skipped_when_jhome_sub_is_absent(client, monkeypatch):
     )
     assert resp.status_code == 200
     assert calls == []
+
+
+def test_wallet_grouping_reaches_an_existing_user_with_an_already_cached_wallet(
+        client, monkeypatch):
+    """End-to-end proof of the wallet-grouping fix: an EXISTING user
+    (simulating one who signed up locally before ever connecting via Jhome)
+    who ALREADY has a wallet still gets the grouping call when a handoff sets
+    their jhome_sub. Under the old ensure_wallet call this user's cached
+    wallet id short-circuited the Token Service call entirely, so they were
+    never grouped -- the single most common real-world case."""
+    c, TestingSession = client
+    _configure(monkeypatch)
+    calls = []
+    monkeypatch.setattr(
+        "routes.internal_routes.token_wallet.link_wallet_to_customer",
+        lambda db, user: calls.append((user.id, user.jhome_sub)) or 999,
+    )
+    s = TestingSession()
+    s.add(User(username="preexisting", email="preexisting@example.com", hashed_password="x",
+                role="client", tier="trial", jts_wallet_id=42))  # already has a wallet
+    s.commit()
+    s.close()
+
+    resp = c.post(
+        "/internal/handoff",
+        json={"email": "preexisting@example.com", "jhome_sub": "sub-preexisting",
+              "email_verified": True},
+        headers={"X-Internal-Key": "test-internal-key"},
+    )
+    assert resp.status_code == 200
+    assert len(calls) == 1
+    assert calls[0][1] == "sub-preexisting"
+
+
+def test_unverified_caller_email_is_refused_for_an_existing_user(client, monkeypatch):
+    """Binding jhome_sub onto an account matched only by email needs the
+    Backoffice to have vouched for that address."""
+    c, TestingSession = client
+    _configure(monkeypatch)
+    s = TestingSession()
+    s.add(User(username="existing", email="existing@example.com", hashed_password="x",
+                role="client", tier="trial"))
+    s.commit()
+    s.close()
+
+    resp = c.post(
+        "/internal/handoff",
+        json={"email": "existing@example.com", "email_verified": False},
+        headers={"X-Internal-Key": "test-internal-key"},
+    )
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == {"error": "unverified_caller_email"}
+
+
+def test_omitted_email_verified_fails_closed_for_an_existing_user(client, monkeypatch):
+    """The field defaults to False, so an old caller that does not send it at
+    all is refused rather than silently vouched for."""
+    c, TestingSession = client
+    _configure(monkeypatch)
+    s = TestingSession()
+    s.add(User(username="omitted", email="omitted@example.com", hashed_password="x",
+                role="client", tier="trial"))
+    s.commit()
+    s.close()
+
+    resp = c.post(
+        "/internal/handoff",
+        json={"email": "omitted@example.com"},
+        headers={"X-Internal-Key": "test-internal-key"},
+    )
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == {"error": "unverified_caller_email"}
+
+
+def test_unverified_caller_email_does_not_bind_jhome_sub(client, monkeypatch):
+    """A refusal must leave zero side effects -- the check runs BEFORE the
+    adopt/conflict logic, so no sub is written on the way out."""
+    c, TestingSession = client
+    _configure(monkeypatch)
+    s = TestingSession()
+    s.add(User(username="nobind", email="nobind@example.com", hashed_password="x",
+                role="client", tier="trial"))
+    s.commit()
+    s.close()
+
+    resp = c.post(
+        "/internal/handoff",
+        json={"email": "nobind@example.com", "jhome_sub": "sub-should-not-bind",
+              "email_verified": False},
+        headers={"X-Internal-Key": "test-internal-key"},
+    )
+    assert resp.status_code == 409
+    s = TestingSession()
+    user = s.query(User).filter(User.email == "nobind@example.com").one()
+    assert user.jhome_sub is None
+    s.close()
+
+
+def test_unverified_email_does_not_block_new_user_creation(client, monkeypatch):
+    """The gate protects binding to an EXISTING account, not new signups.
+    Jhome Auth's own /authorize gate already stops an unverified Backoffice
+    session reaching here for a real caller."""
+    c, _ = client
+    _configure(monkeypatch)
+    resp = c.post(
+        "/internal/handoff",
+        json={"email": "brandnew@example.com", "email_verified": False},
+        headers={"X-Internal-Key": "test-internal-key"},
+    )
+    assert resp.status_code == 200
+
+
+def test_full_backoffice_payload_shape_is_handled_without_error(client, monkeypatch):
+    """Backoffice's shared client actually sends 5 fields (email, name,
+    jhome_sub, domains, email_verified) to every connected app
+    unconditionally, even ones like Gootier that don't need domains. Pin that
+    this doesn't crash if a future Pydantic config change (e.g.
+    extra='forbid') is accidentally introduced."""
+    c, TestingSession = client
+    _configure(monkeypatch)
+    resp = c.post(
+        "/internal/handoff",
+        json={
+            "email": "fullpayload@example.com",
+            "name": "Full Payload",
+            "jhome_sub": "sub-full",
+            "domains": ["example.com", "example.org"],
+            "email_verified": True,
+        },
+        headers={"X-Internal-Key": "test-internal-key"},
+    )
+    assert resp.status_code == 200
+    # `domains` is dropped by Pydantic's default extra='ignore' -- confirm it
+    # did not leak onto the created row through some other path.
+    s = TestingSession()
+    user = s.query(User).filter(User.email == "fullpayload@example.com").one()
+    assert not hasattr(user, "domains")
+    assert user.jhome_sub == "sub-full"
+    s.close()

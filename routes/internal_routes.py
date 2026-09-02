@@ -35,6 +35,12 @@ class HandoffRequest(BaseModel):
     email: str
     name: str | None = None
     jhome_sub: str | None = None
+    # The Backoffice's assertion that IT has proof of this address. Defaults
+    # False so a caller that omits it fails closed -- refused rather than
+    # silently vouching for an address nobody verified. Only gates binding an
+    # EXISTING account by email (see the check in handoff()); creating a brand
+    # new account is not a bind, so it stays reachable.
+    email_verified: bool = False
 
 
 def require_internal_key(x_internal_key: str = Header(default="")) -> None:
@@ -94,12 +100,31 @@ def handoff(req: HandoffRequest, response: Response, db: Session = Depends(get_d
     matches = db.query(User).filter(func.lower(User.email) == email).order_by(User.id).all()
     if len(matches) > 1:
         log.warning("handoff refused: %d case-variant accounts for email %s", len(matches), email)
-        raise HTTPException(status_code=409, detail="ambiguous account")
+        # Jhome Auth's own code for "more than one account answers to this
+        # identity, so binding either would be a guess". The Backoffice has no
+        # _REFUSAL_COPY entry for it yet (it is listed in _TERMINAL_REFUSALS),
+        # so it renders the generic action-needed page -- correct behaviour,
+        # just uncopied.
+        raise HTTPException(status_code=409, detail={"error": "ambiguous_identity"})
     user = matches[0] if matches else None
 
     if user is not None and not user.is_active:
         log.warning("handoff refused: user %s is deactivated", user.id)
-        raise HTTPException(status_code=401, detail="user not found or inactive")
+        # 403, NOT 401. 401 is the auth layer's code for "your shared key is
+        # wrong", and the Backoffice logs an ERROR-level "handoff
+        # misconfigured (401)" on it -- a suspended customer clicking the tile
+        # would raise a false credential-rotation alarm every time. Jhome Auth
+        # uses 403 + account_inactive for this exact condition.
+        raise HTTPException(status_code=403, detail={"error": "account_inactive"})
+
+    if user is not None and not req.email_verified:
+        # Matching by email is a WEAK signal: it binds jhome_sub onto an
+        # account this caller has only named, not proven. Refuse unless the
+        # Backoffice explicitly vouched for the address. Same code and status
+        # as Jhome Auth's equivalent gate; it has _REFUSAL_COPY there, which
+        # points the customer at /account to confirm their address.
+        log.warning("handoff refused: caller did not assert email_verified for user %s", user.id)
+        raise HTTPException(status_code=409, detail={"error": "unverified_caller_email"})
 
     if user is None and req.jhome_sub:
         existing_sub_holder = db.query(User).filter(User.jhome_sub == req.jhome_sub).first()
@@ -109,7 +134,12 @@ def handoff(req: HandoffRequest, response: Response, db: Session = Depends(get_d
                 "but the request's email does not match that user",
                 req.jhome_sub, existing_sub_holder.id,
             )
-            raise HTTPException(status_code=409, detail="user is linked to a different email")
+            # Jhome Auth's linked_elsewhere: this identity is already bound to
+            # a different account here. (Its copy is written for the mirror
+            # case -- the account owns a different sub -- but the customer-
+            # facing next step is the same one, and it is the closest real
+            # code in the fleet.)
+            raise HTTPException(status_code=409, detail={"error": "linked_elsewhere"})
 
     if user is None:
         # NOTE: a concurrent-same-email-insert race (two handoffs for the
@@ -124,15 +154,20 @@ def handoff(req: HandoffRequest, response: Response, db: Session = Depends(get_d
             "handoff refused: user %s carried jhome_sub %s but it already has %s",
             user.id, req.jhome_sub, user.jhome_sub,
         )
-        raise HTTPException(status_code=409, detail="user is linked to a different Jhome subject")
+        raise HTTPException(status_code=409, detail={"error": "linked_elsewhere"})
 
     if user.has_role("admin"):
         log.warning("handoff refused: user %s has platform admin access", user.id)
-        raise HTTPException(status_code=403, detail="handoff refused")
+        # Gootier-specific: no other connected app refuses on platform-admin
+        # role, so there is no fleet code to reuse. The Backoffice's
+        # _REFUSAL_COPY has no entry for this yet, so it renders the generic
+        # "could not sign you in" action-needed page until one is added there
+        # (a Backoffice-side follow-up, out of scope here).
+        raise HTTPException(status_code=403, detail={"error": "admin_account_not_supported"})
 
     if user.jhome_sub:
         try:
-            token_wallet.ensure_wallet(db, user)
+            token_wallet.link_wallet_to_customer(db, user)
         except Exception:  # noqa: BLE001 -- a login path must never fail on this
             log.exception("could not link wallet for user %s", user.id)
 
