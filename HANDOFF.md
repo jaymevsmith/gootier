@@ -281,3 +281,23 @@ content with this section appended — no force-push, no history rewritten.
 Lesson: always `Read` this file before writing it, even when a `find` for
 it in the wrong directory (the primary checkout, not the worktree the
 branch was actually based on) suggests it doesn't exist yet.
+
+
+## CSRF double-submit cookie also marked Secure in production (2026-09-02)
+
+**What changed:** closed the follow-up flagged in the section above — the
+CSRF double-submit cookie (`services/csrf.py::CSRFCookieMiddleware`) had
+the exact same gap as the session cookie: no `secure=True` in prod, and its
+own comment falsely claimed "secure-in-prod" was already the mitigation.
+Added the same `os.getenv("ENV", "").lower() in {"prod", "production"}`
+check used by `auth.set_session_cookie` directly to its `response.set_cookie`
+call, and restored the comment to its original (now true) claim.
+
+**Verified:** new `tests/test_csrf_cookie_secure.py`, RED before the change
+(prod case asserted `Secure` present, failed against the real header) and
+GREEN after; same pattern as `tests/test_session_cookie_secure.py`. Full
+suite: 97 passed (up from 95), same 2 pre-existing unrelated failures.
+
+**State:** same [PR #7](https://github.com/jaymevsmith/gootier/pull/7),
+commit `98febc9`, still not merged. No remaining known cookie in this app
+missing `secure=True` in prod.
