@@ -11,7 +11,7 @@ from fastapi.staticfiles import StaticFiles
 load_dotenv()
 
 from models import init_db  # noqa: E402  (load env first)
-from routes import admin_routes, auth_routes, media_routes, oauth_routes, stripe_routes, web_routes
+from routes import admin_routes, auth_routes, internal_routes, media_routes, oauth_routes, stripe_routes, web_routes
 from routes.api_routes import router as api_router
 from services.csrf import CSRFCookieMiddleware
 from services.scheduler import scheduler_loop
@@ -51,6 +51,7 @@ app.include_router(oauth_routes.router)
 app.include_router(stripe_routes.router)
 app.include_router(admin_routes.router)
 app.include_router(media_routes.router)
+app.include_router(internal_routes.router)
 app.include_router(api_router)
 
 

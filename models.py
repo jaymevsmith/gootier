@@ -52,6 +52,10 @@ class User(Base):
     # Populated on first Google-auth callback; used to re-link the account if the
     # user later changes the email on their Google profile.
     google_sub = Column(String, nullable=True, index=True, unique=True)
+    # Stable subject id from Jhome Auth, set the first time a Backoffice
+    # handoff resolves to this user. Unique where set, same convention as
+    # google_sub -- see POST /internal/handoff in routes/internal_routes.py.
+    jhome_sub = Column(String, nullable=True, index=True, unique=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     # Jhome Affiliates referral code captured from ?ref= at signup (nullable —
     # most users won't have one). See routes/auth_routes.py signup_submit.
@@ -291,6 +295,21 @@ class EnvConfig(Base):
     updated_by_name = Column(String, nullable=True)
 
 
+class HandoffToken(Base):
+    """Single-use token minted by POST /internal/handoff, redeemed by
+    GET /sso/consume. Hash-only -- see services/handoff.py."""
+    __tablename__ = "handoff_tokens"
+
+    id = Column(Integer, primary_key=True)
+    token_hash = Column(String, unique=True, nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    expires_at = Column(DateTime, nullable=False)
+    used_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    user = relationship("User", backref="handoff_tokens")
+
+
 # --------------------------------------------------------------------------- #
 # Idempotent migrations + seeds (run on every startup)
 # --------------------------------------------------------------------------- #
@@ -378,6 +397,7 @@ KNOWN_ENV_KEYS = [
     ("GOOGLE_AUTH_CLIENT_ID",     "auth",   False, False, "Google OAuth client ID for Sign in with Google (account auth, NOT YouTube uploads). If blank, falls back to YOUTUBE_CLIENT_ID. From Google Cloud Console → Credentials."),
     ("GOOGLE_AUTH_CLIENT_SECRET", "auth",   True,  False, "Google OAuth client secret for Sign in with Google. Falls back to YOUTUBE_CLIENT_SECRET if blank."),
     ("GOOGLE_AUTH_REDIRECT",      "auth",   False, False, "Sign in with Google redirect URI, e.g. https://yourhost/oauth/google/callback. Must be registered in Google Cloud Console alongside the YouTube redirect."),
+    ("GOOTIER_INTERNAL_KEY",      "auth",   True,  False, "Shared secret the Backoffice presents as X-Internal-Key on POST /internal/handoff. Empty = the endpoint fails closed (401 on every call)."),
 
     ("FAL_API_KEY",            "ai",      True,  False, "fal.ai API key powering image + video generation."),
 ]
@@ -412,6 +432,7 @@ def _upgrade_users(conn):
     _safe_add_column(conn, "users", "verify_token_expires_at",   "TIMESTAMP")
     _safe_add_column(conn, "users", "calendar_token",            "VARCHAR")
     _safe_add_column(conn, "users", "google_sub",                "VARCHAR")
+    _safe_add_column(conn, "users", "jhome_sub",                 "VARCHAR")
     _safe_add_column(conn, "users", "referral_code",             "VARCHAR")
     _safe_add_column(conn, "users", "jts_wallet_id",             "INTEGER")
 

@@ -15,8 +15,8 @@ class FakeJTSClient:
         self.raise_on_debit = raise_on_debit
         self.raise_on_ensure_wallet = raise_on_ensure_wallet
 
-    def ensure_wallet(self, external_user_id, email=""):
-        self.ensure_wallet_calls.append(external_user_id)
+    def ensure_wallet(self, external_user_id, email="", customer_ref=None):
+        self.ensure_wallet_calls.append((external_user_id, customer_ref))
         if self.raise_on_ensure_wallet is not None:
             raise self.raise_on_ensure_wallet
         return 999
@@ -49,11 +49,86 @@ def test_ensure_wallet_caches_id_on_user(db, monkeypatch):
 
     assert wallet_id == 999
     assert user.jts_wallet_id == 999
-    assert fake.ensure_wallet_calls == [str(user.id)]
+    assert fake.ensure_wallet_calls == [(str(user.id), None)]
 
     # second call doesn't hit JTS again
     token_wallet.ensure_wallet(db, user)
-    assert fake.ensure_wallet_calls == [str(user.id)]
+    assert fake.ensure_wallet_calls == [(str(user.id), None)]
+
+
+def test_ensure_wallet_forwards_customer_ref_when_present(db, monkeypatch):
+    fake = FakeJTSClient()
+    monkeypatch.setattr(token_wallet, "_client", lambda: fake)
+    user = _user(db)
+    user.jhome_sub = "sub-abc"
+    db.commit()
+
+    token_wallet.ensure_wallet(db, user)
+
+    assert fake.ensure_wallet_calls == [(str(user.id), "sub-abc")]
+
+
+def test_ensure_wallet_sends_no_customer_ref_when_jhome_sub_is_unset(db, monkeypatch):
+    fake = FakeJTSClient()
+    monkeypatch.setattr(token_wallet, "_client", lambda: fake)
+    user = _user(db)  # jhome_sub defaults to None
+
+    token_wallet.ensure_wallet(db, user)
+
+    assert fake.ensure_wallet_calls == [(str(user.id), None)]
+
+
+def test_link_wallet_to_customer_calls_the_service_even_when_a_wallet_is_already_cached(
+        db, monkeypatch):
+    """The exact bug this function exists to fix: a user who already has a
+    wallet (e.g. from normal signup) must still get grouped when their
+    jhome_sub is set later. ensure_wallet would short-circuit on the cached id
+    and never send customer_ref at all."""
+    fake = FakeJTSClient()
+    monkeypatch.setattr(token_wallet, "_client", lambda: fake)
+    user = _user(db)
+    user.jts_wallet_id = 555  # simulates a wallet already created at signup
+    user.jhome_sub = "sub-existing-user"
+    db.commit()
+
+    result = token_wallet.link_wallet_to_customer(db, user)
+
+    assert fake.ensure_wallet_calls == [(str(user.id), "sub-existing-user")]
+    # FakeJTSClient always answers 999 -- it keeps no per-user wallet map --
+    # so the returned id is the service's answer, not the cached 555.
+    assert result == 999
+
+
+def test_link_wallet_to_customer_does_not_overwrite_an_already_cached_wallet_id(
+        db, monkeypatch):
+    fake = FakeJTSClient()
+    monkeypatch.setattr(token_wallet, "_client", lambda: fake)
+    user = _user(db)
+    user.jts_wallet_id = 555
+    user.jhome_sub = "sub-x"
+    db.commit()
+
+    token_wallet.link_wallet_to_customer(db, user)
+
+    db.refresh(user)
+    assert user.jts_wallet_id == 555  # unchanged -- FakeJTSClient returns 999
+
+
+def test_link_wallet_to_customer_caches_the_id_when_there_is_none_yet(db, monkeypatch):
+    """A brand-new user created by the handoff itself still gets the id
+    persisted, exactly as ensure_wallet would have."""
+    fake = FakeJTSClient()
+    monkeypatch.setattr(token_wallet, "_client", lambda: fake)
+    user = _user(db)
+    user.jhome_sub = "sub-brand-new"
+    db.commit()
+    assert user.jts_wallet_id is None
+
+    result = token_wallet.link_wallet_to_customer(db, user)
+
+    assert result == 999
+    db.refresh(user)
+    assert user.jts_wallet_id == 999
 
 
 def test_check_sufficient_raises_402_when_estimate_exceeds_balance(db, monkeypatch):
