@@ -12,10 +12,11 @@ import secrets
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Response
 from pydantic import BaseModel
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from database import get_db
-from models import HandoffToken, User
+from models import HandoffToken, User, log_action
 from services.env_config import get_env
 from services.handoff import generate_token, hash_token, default_expiry
 
@@ -55,7 +56,7 @@ def handoff(req: HandoffRequest, response: Response, db: Session = Depends(get_d
     if not _EMAIL_RE.match(email):
         raise HTTPException(status_code=422, detail="invalid email")
 
-    user = db.query(User).filter(User.email == email).one_or_none()
+    user = db.query(User).filter(func.lower(User.email) == email).one_or_none()
 
     if user is None:
         # A later task replaces this with real new-user creation. None of
@@ -64,9 +65,16 @@ def handoff(req: HandoffRequest, response: Response, db: Session = Depends(get_d
         # non-crashing response for the branch until that task fills it in.
         raise HTTPException(status_code=501, detail="new-user creation not implemented yet")
 
+    if user.has_role("admin"):
+        log.warning("handoff refused: user %s has platform admin access", user.id)
+        raise HTTPException(status_code=403, detail="admin accounts cannot be handed off")
+
     token = generate_token()
     db.add(HandoffToken(token_hash=hash_token(token), user_id=user.id,
                          expires_at=default_expiry()))
     db.commit()
+
+    log.info("handoff minted token for user %s", user.id)
+    log_action(db, user, "BACKOFFICE_HANDOFF", "User", str(user.id))
 
     return {"consume_url": f"{app_url}/sso/consume?token={token}"}

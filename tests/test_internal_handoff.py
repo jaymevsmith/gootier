@@ -98,3 +98,66 @@ def test_handoff_for_an_existing_user_returns_a_consume_url(client, monkeypatch)
     body = resp.json()
     assert body["consume_url"].startswith("https://gootier.example.com/sso/consume?token=")
     assert resp.headers["cache-control"] == "no-store"
+
+
+def test_admin_account_handoff_is_refused(client, monkeypatch):
+    c, TestingSession = client
+    _configure(monkeypatch)
+    s = TestingSession()
+    s.add(User(username="theadmin", email="admin@example.com", hashed_password="x",
+                role="admin", tier="trial"))
+    s.commit()
+    s.close()
+
+    resp = c.post(
+        "/internal/handoff",
+        json={"email": "admin@example.com"},
+        headers={"X-Internal-Key": "test-internal-key"},
+    )
+    assert resp.status_code == 403
+
+
+def test_handoff_fails_closed_when_the_key_is_unconfigured(client, monkeypatch):
+    c, _ = client
+    monkeypatch.setattr(
+        "routes.internal_routes.get_env",
+        lambda key, default="": "" if key == "GOOTIER_INTERNAL_KEY" else default,
+    )
+    resp = c.post(
+        "/internal/handoff",
+        json={"email": "a@example.com"},
+        headers={"X-Internal-Key": ""},
+    )
+    assert resp.status_code == 401
+
+
+def test_handoff_rejects_a_non_ascii_key_without_raising(client, monkeypatch):
+    c, _ = client
+    _configure(monkeypatch)
+    # httpx.Headers only accepts non-ASCII str header values via a raw bytes
+    # value (it otherwise ascii-encodes str values itself, before the
+    # request ever leaves the client) -- passing utf-8 bytes here mirrors
+    # what Starlette actually decodes as latin-1 on the wire.
+    resp = c.post(
+        "/internal/handoff",
+        json={"email": "a@example.com"},
+        headers={"X-Internal-Key": "café".encode("utf-8")},
+    )
+    assert resp.status_code == 401
+
+
+def test_email_lookup_is_case_insensitive(client, monkeypatch):
+    c, TestingSession = client
+    _configure(monkeypatch)
+    s = TestingSession()
+    s.add(User(username="mixedcase", email="MixedCase@Example.com", hashed_password="x",
+                role="client", tier="trial"))
+    s.commit()
+    s.close()
+
+    resp = c.post(
+        "/internal/handoff",
+        json={"email": "mixedcase@example.com"},
+        headers={"X-Internal-Key": "test-internal-key"},
+    )
+    assert resp.status_code == 200
