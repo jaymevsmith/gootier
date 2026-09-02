@@ -90,6 +90,10 @@ async def login_submit(
     return response
 
 
+# Deliberately a bare GET, unlike /verify-email's CSRF-protected-POST
+# interstitial: this URL is a server-side redirect target from the
+# Backoffice, never an emailed link a scanner/prefetcher could hit, so
+# that pattern's justification doesn't apply here.
 @router.get("/sso/consume")
 def sso_consume(token: str = "", db: Session = Depends(get_db)):
     if not token:
@@ -102,7 +106,7 @@ def sso_consume(token: str = "", db: Session = Depends(get_db)):
         return RedirectResponse(url="/login?error=sso", status_code=303)
 
     user = db.query(User).filter(User.id == row.user_id).one_or_none()
-    if user is None or not user.is_active:
+    if user is None or not user.is_active or user.has_role("admin"):
         return RedirectResponse(url="/login?error=sso", status_code=303)
 
     # Burn BEFORE issuing the cookie, and make the burn itself the
@@ -117,6 +121,7 @@ def sso_consume(token: str = "", db: Session = Depends(get_db)):
 
     session_token = create_access_token(user.id)
     response = RedirectResponse(url="/dashboard", status_code=303)
+    response.headers["Cache-Control"] = "no-store"
     response.set_cookie(
         key=COOKIE_NAME, value=session_token, httponly=True, samesite="lax",
         max_age=TOKEN_TTL_MINUTES * 60,

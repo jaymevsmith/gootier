@@ -27,7 +27,7 @@ from services.handoff import hash_token
 
 
 @pytest.fixture
-def client(db):
+def client():
     engine = create_engine(
         "sqlite:///:memory:",
         connect_args={"check_same_thread": False},
@@ -92,6 +92,10 @@ def test_valid_token_redeems_into_a_real_session(client):
     assert resp.headers["location"] == "/dashboard"
     assert COOKIE_NAME in resp.cookies
 
+    from auth import _decode_user_id
+    decoded_user_id = _decode_user_id(resp.cookies[COOKIE_NAME])
+    assert decoded_user_id == user_id
+
 
 def test_token_is_burned_after_use(client):
     c, TestingSession = client
@@ -145,10 +149,45 @@ def test_deactivated_user_fails_even_with_a_valid_token(client):
     assert resp.headers["location"] == "/login?error=sso"
 
 
-def test_two_concurrent_redeems_of_the_same_token_only_one_succeeds(client):
-    """Genuine race, not same-session mocking: two separate DB sessions both
-    try to burn the same token row via the atomic UPDATE...WHERE used_at IS
-    NULL. Only one should see rowcount==1; the other must fail cleanly."""
+def test_unknown_token_fails(client):
+    c, _ = client
+    resp = c.get("/sso/consume?token=this-token-does-not-exist", follow_redirects=False)
+    assert resp.status_code == 303
+    assert resp.headers["location"] == "/login?error=sso"
+
+
+def test_two_redeems_of_the_same_token_only_one_succeeds(client):
+    """Drives the real route twice. The second call happens after the first
+    has already burned the token, so this proves burned-token rejection
+    through the actual endpoint -- not through hand-written SQL bypassing
+    sso_consume entirely."""
+    c, TestingSession = client
+    plaintext, user_id = _make_token(TestingSession)
+
+    resp1 = c.get(f"/sso/consume?token={plaintext}", follow_redirects=False)
+    resp2 = c.get(f"/sso/consume?token={plaintext}", follow_redirects=False)
+
+    assert resp1.status_code == 303
+    assert resp1.headers["location"] == "/dashboard"
+    assert "set-cookie" in resp1.headers
+
+    assert resp2.status_code == 303
+    assert resp2.headers["location"] == "/login?error=sso"
+    # The second response must not carry a fresh session cookie.
+    assert resp2.headers.get("set-cookie", "") == "" or "access_token" not in resp2.headers.get("set-cookie", "")
+
+    s = TestingSession()
+    row = s.query(HandoffToken).one()
+    assert row.used_at is not None
+    s.close()
+
+
+def test_atomic_update_where_used_at_is_null_prevents_a_double_burn(client):
+    """This is a SQL-level proof that the UPDATE...WHERE used_at IS NULL
+    pattern sso_consume relies on is correct -- it drives two separate DB
+    sessions directly, not the HTTP endpoint. See
+    test_two_redeems_of_the_same_token_only_one_succeeds for the end-to-end
+    proof that sso_consume actually uses this pattern."""
     c, TestingSession = client
     plaintext, user_id = _make_token(TestingSession)
 
