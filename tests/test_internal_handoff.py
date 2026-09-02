@@ -161,3 +161,22 @@ def test_email_lookup_is_case_insensitive(client, monkeypatch):
         headers={"X-Internal-Key": "test-internal-key"},
     )
     assert resp.status_code == 200
+
+
+def test_case_variant_duplicate_accounts_are_refused_not_crashed(client, monkeypatch):
+    c, TestingSession = client
+    _configure(monkeypatch)
+    s = TestingSession()
+    s.add(User(username="dupe1", email="Dupe@Example.com", hashed_password="x",
+                role="client", tier="trial"))
+    s.add(User(username="dupe2", email="dupe@example.com", hashed_password="x",
+                role="client", tier="trial"))
+    s.commit()
+    s.close()
+
+    resp = c.post(
+        "/internal/handoff",
+        json={"email": "dupe@example.com"},
+        headers={"X-Internal-Key": "test-internal-key"},
+    )
+    assert resp.status_code == 409

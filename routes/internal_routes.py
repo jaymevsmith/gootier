@@ -56,7 +56,11 @@ def handoff(req: HandoffRequest, response: Response, db: Session = Depends(get_d
     if not _EMAIL_RE.match(email):
         raise HTTPException(status_code=422, detail="invalid email")
 
-    user = db.query(User).filter(func.lower(User.email) == email).one_or_none()
+    matches = db.query(User).filter(func.lower(User.email) == email).order_by(User.id).all()
+    if len(matches) > 1:
+        log.warning("handoff refused: %d case-variant accounts for email %s", len(matches), email)
+        raise HTTPException(status_code=409, detail="ambiguous account")
+    user = matches[0] if matches else None
 
     if user is None:
         # A later task replaces this with real new-user creation. None of
@@ -67,7 +71,7 @@ def handoff(req: HandoffRequest, response: Response, db: Session = Depends(get_d
 
     if user.has_role("admin"):
         log.warning("handoff refused: user %s has platform admin access", user.id)
-        raise HTTPException(status_code=403, detail="admin accounts cannot be handed off")
+        raise HTTPException(status_code=403, detail="handoff refused")
 
     token = generate_token()
     db.add(HandoffToken(token_hash=hash_token(token), user_id=user.id,
