@@ -18,6 +18,7 @@ Tokens are 32 bytes of url-safe base64 — fresh on every login form load
 for a logged-out visitor, sticky across requests for a returning one.
 """
 import hmac
+import os
 import secrets
 from typing import Optional
 
@@ -69,14 +70,13 @@ class CSRFCookieMiddleware(BaseHTTPMiddleware):
             # Cookie must be readable by JS only for AJAX setups; we use it
             # purely for double-submit, so httponly=False is fine here
             # (the value is also embedded in the form so JS doesn't need it).
-            # samesite=lax is the main mitigation here — this cookie is not
-            # marked secure=True in prod (unlike the session cookie in
-            # auth.set_session_cookie), so it is still sent over plain HTTP.
+            # samesite=lax + secure-in-prod is the main mitigation.
             response.set_cookie(
                 CSRF_COOKIE, token,
                 max_age=_COOKIE_MAX_AGE,
                 httponly=True,         # double-submit only; templates render it
                 samesite="lax",
+                secure=os.getenv("ENV", "").lower() in {"prod", "production"},
                 path="/",
             )
         return response
