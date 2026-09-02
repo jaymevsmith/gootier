@@ -272,3 +272,75 @@ def test_password_login_never_matches_a_handoff_created_users_password(client, m
     for guess in ("", "password", "nopassword@example.com", "12345678"):
         assert not verify_password(guess, user.hashed_password)
     s.close()
+
+
+def test_deactivated_user_is_refused(client, monkeypatch):
+    c, TestingSession = client
+    _configure(monkeypatch)
+    s = TestingSession()
+    s.add(User(username="gone", email="gone@example.com", hashed_password="x",
+                role="client", tier="trial", is_active=False))
+    s.commit()
+    s.close()
+
+    resp = c.post(
+        "/internal/handoff",
+        json={"email": "gone@example.com"},
+        headers={"X-Internal-Key": "test-internal-key"},
+    )
+    assert resp.status_code == 401
+
+
+def test_existing_user_jhome_sub_conflict_is_refused(client, monkeypatch):
+    c, TestingSession = client
+    _configure(monkeypatch)
+    s = TestingSession()
+    s.add(User(username="linked", email="linked@example.com", hashed_password="x",
+                role="client", tier="trial", jhome_sub="sub-original"))
+    s.commit()
+    s.close()
+
+    resp = c.post(
+        "/internal/handoff",
+        json={"email": "linked@example.com", "jhome_sub": "sub-different"},
+        headers={"X-Internal-Key": "test-internal-key"},
+    )
+    assert resp.status_code == 409
+
+
+def test_matching_jhome_sub_on_an_existing_user_is_not_a_conflict(client, monkeypatch):
+    c, TestingSession = client
+    _configure(monkeypatch)
+    s = TestingSession()
+    s.add(User(username="samesub", email="samesub@example.com", hashed_password="x",
+                role="client", tier="trial", jhome_sub="sub-same"))
+    s.commit()
+    s.close()
+
+    resp = c.post(
+        "/internal/handoff",
+        json={"email": "samesub@example.com", "jhome_sub": "sub-same"},
+        headers={"X-Internal-Key": "test-internal-key"},
+    )
+    assert resp.status_code == 200
+
+
+def test_unset_jhome_sub_on_an_existing_user_gets_adopted(client, monkeypatch):
+    c, TestingSession = client
+    _configure(monkeypatch)
+    s = TestingSession()
+    s.add(User(username="fresh", email="fresh@example.com", hashed_password="x",
+                role="client", tier="trial"))  # jhome_sub defaults to None
+    s.commit()
+    s.close()
+
+    resp = c.post(
+        "/internal/handoff",
+        json={"email": "fresh@example.com", "jhome_sub": "sub-newly-linked"},
+        headers={"X-Internal-Key": "test-internal-key"},
+    )
+    assert resp.status_code == 200
+    s = TestingSession()
+    user = s.query(User).filter(User.email == "fresh@example.com").one()
+    assert user.jhome_sub == "sub-newly-linked"
+    s.close()

@@ -96,6 +96,10 @@ def handoff(req: HandoffRequest, response: Response, db: Session = Depends(get_d
         raise HTTPException(status_code=409, detail="ambiguous account")
     user = matches[0] if matches else None
 
+    if user is not None and not user.is_active:
+        log.warning("handoff refused: user %s is deactivated", user.id)
+        raise HTTPException(status_code=401, detail="user not found or inactive")
+
     if user is None and req.jhome_sub:
         existing_sub_holder = db.query(User).filter(User.jhome_sub == req.jhome_sub).first()
         if existing_sub_holder is not None:
@@ -112,6 +116,15 @@ def handoff(req: HandoffRequest, response: Response, db: Session = Depends(get_d
         # genuinely rarer than the jhome_sub-mismatch case above, and not
         # worth more retry machinery for the marginal benefit.
         user = _create_user(db, email, req.jhome_sub, req.name)
+    elif req.jhome_sub and not user.jhome_sub:
+        user.jhome_sub = req.jhome_sub
+        db.commit()
+    elif req.jhome_sub and user.jhome_sub and user.jhome_sub != req.jhome_sub:
+        log.warning(
+            "handoff for user %s carried jhome_sub %s but it already has %s; refusing",
+            user.id, req.jhome_sub, user.jhome_sub,
+        )
+        raise HTTPException(status_code=409, detail="user is linked to a different Jhome subject")
 
     if user.has_role("admin"):
         log.warning("handoff refused: user %s has platform admin access", user.id)
