@@ -80,7 +80,7 @@ out of scope for this feature:**
 - `handoff_tokens` has no reaper — nothing deletes expired/used rows, so
   the table grows monotonically. Not a security issue (hash-only,
   single-use), just housekeeping that belongs in the existing
-  `scheduler_loop()`.
+  `scheduler_loop()`. **Fixed — see the entry below.**
 
 **Operational, done live, not in code:** the Token Service's `App` row for
 Gootier (id 6) had `shares_customer_balance=False` — flipped to `True`
@@ -216,6 +216,40 @@ had its wallet manually re-linked to the correct customer group at deploy
 time, BEFORE this fix existed — that manual correction remains correct and
 doesn't need redoing, since `link_wallet_to_customer` would now produce
 the identical result on its own for any future handoff.
+
+## handoff_tokens reaper (2026-09-01)
+
+**What changed:** `handoff_tokens` had no cleanup — every mint via
+`POST /internal/handoff` left a row behind forever, so the table grew
+monotonically (flagged as a deferred follow-up above). Added
+`reap_expired_tokens(db)` in `services/handoff.py` and wired it into
+`scheduler_loop()` (`services/scheduler.py`) via
+`_cleanup_expired_handoff_tokens()`, running every 12h
+(`HANDOFF_REAP_EVERY_TICKS`). Deletes rows where `expires_at` is more than a
+day (`REAP_RETENTION`) in the past — covers both used and unused tokens,
+since `expires_at` is set at mint time regardless of whether the token was
+later redeemed.
+
+Not a security fix — rows are hash-only and single-use — this is routine
+housekeeping that was deliberately deferred out of the original SSO handoff
+security review (branch `gootier-connected-app`, merged as PR #6) to keep
+that PR scoped to the actual feature.
+
+**State:** merged to `main` as [PR #8](https://github.com/jaymevsmith/gootier/pull/8),
+commit `caad86f`, built off a fresh worktree at `.worktrees/handoff-token-reaper`
+branched from `origin/main` — the primary checkout had unrelated uncommitted
+work in progress (billing/template changes) and was 21 commits behind, so it
+was left untouched.
+
+**Tests:** `tests/test_handoff_reaper.py` (new, 3 cases: deletes past
+retention, keeps within-retention/valid rows, deletes long-used rows too).
+Full suite: `python3 -m pytest -q` → 96 passed, 2 pre-existing failures in
+`tests/test_affiliates_integration.py` unrelated to this change (confirmed by
+stashing this diff and re-running against unmodified `origin/main` — same 2
+failures, likely a network-dependent affiliate-reporting call).
+
+**Redeploy command:** none — no deploy config change, ships with the next
+normal Railway deploy of the Gootier service once merged.
 
 
 ## Session cookie now marked Secure in production (2026-09-01)
