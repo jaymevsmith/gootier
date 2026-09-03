@@ -16,7 +16,7 @@ from auth import get_current_user, get_current_user_optional
 from database import get_db
 from models import MediaAsset, MediaJob, User, log_action
 from services.env_config import get_env
-from services.token_wallet import balance_tokens
+from services.token_wallet import balance_tokens_or_none
 from services.media import (
     ACCEPTED_IMAGE_TYPES, MAX_UPLOAD_BYTES,
     MEDIA_MODEL_CATALOG, build_image_payload, build_video_payload,
@@ -58,10 +58,11 @@ async def assets_page(
         MediaAsset.user_id == user.id,
         MediaAsset.is_active == True,  # noqa: E712
     ).order_by(MediaAsset.created_at.desc()).all()
+    raw_balance = balance_tokens_or_none(db, user)
     return templates.TemplateResponse(request, "assets.html", {
         "user": user,
         "assets": items,
-        "credit_balance": balance_tokens(db, user) // 1000,
+        "credit_balance": None if raw_balance is None else raw_balance // 1000,
         "kinds": VALID_KINDS,
     })
 
@@ -205,7 +206,10 @@ async def media_catalog(user: User = Depends(get_current_user), db: Session = De
     submit time (see services/token_wallet.check_sufficient) — the client
     doesn't do a pre-flight cost comparison.
     """
-    bal = balance_tokens(db, user) // 1000
+    raw_balance = balance_tokens_or_none(db, user)
+    # null, not 0, when the Token Service could not answer -- the modals this
+    # feeds must still open, and "0" would read as "you are out of tokens".
+    bal = None if raw_balance is None else raw_balance // 1000
     out = {"balance": bal, "models": {}}
     for kind, options in MEDIA_MODEL_CATALOG.items():
         out["models"][kind] = [

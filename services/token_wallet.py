@@ -76,6 +76,40 @@ def balance_tokens(db: Session, user: User) -> int:
     return _client().get_balance(wallet_id)
 
 
+def balance_tokens_or_none(db: Session, user: User) -> Optional[int]:
+    """The balance for DISPLAY, or None when the Token Service could not answer.
+
+    Page renders must not die because the Token Service is unavailable. On
+    2026-09-03 a ~30-minute JTS outage (empty-body 404s between a broken deploy
+    and the "Restore token service" redeploy) turned every unguarded
+    `balance_tokens(...)` call site into a 500 -- including /dashboard, which is
+    where the Backoffice handoff lands, so a customer was signed in correctly
+    and then shown an Internal Server Error, and /billing, which is the page
+    they would have gone to in order to do something about it.
+
+    An unreachable Token Service means the balance is UNKNOWN, not zero. None
+    is the "unknown" value and renders as an em-dash; returning 0 instead would
+    read as "you are out of tokens", which is a different and false statement.
+    Same fail-open reasoning as debit_after_success, and the same catch-all for
+    non-JTSError transport failures (httpx connect/read errors are not JTSError
+    subclasses, and a host that stops answering entirely raises those).
+
+    Deliberately NOT used by check_sufficient. Failing open on a label is not
+    the same decision as failing open on an authorization: a balance we cannot
+    read is not a balance we may authorize a charge against, so the spend gate
+    keeps raising.
+    """
+    try:
+        return balance_tokens(db, user)
+    except JTSError:
+        log.warning("token balance unavailable for display: user=%s", user.id, exc_info=True)
+        return None
+    except Exception:
+        log.warning("token balance unavailable for display (non-JTS error): user=%s",
+                    user.id, exc_info=True)
+        return None
+
+
 def check_sufficient(db: Session, user: User, estimated_tokens: int) -> None:
     """Soft pre-flight gate — not atomic, purely UX (see design doc 'Debit timing').
     Raises 402 if the current balance clearly can't cover the estimate."""
