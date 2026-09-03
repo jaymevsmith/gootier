@@ -335,3 +335,104 @@ suite: 97 passed (up from 95), same 2 pre-existing unrelated failures.
 **State:** same [PR #7](https://github.com/jaymevsmith/gootier/pull/7),
 commit `98febc9`, still not merged. No remaining known cookie in this app
 missing `secure=True` in prod.
+
+
+## A Token Service outage 500s the pages that show a balance (2026-09-03)
+
+**The report:** "when I select Gootier from the backoffice I get an error."
+
+**What actually happened, in order:**
+
+1. Backoffice `/services/gootier` called Gootier `POST /internal/handoff`. It
+   **succeeded** — `handoff minted token for user 5` is in the logs twice at
+   08:54:17 UTC. The handoff, `/sso/consume` and the session cookie were all
+   fine; this was never an SSO bug.
+2. `/sso/consume` redirected to `/dashboard`, which ran
+   `credit_balance = balance_tokens(db, user) // 1000` (`routes/web_routes.py`).
+3. That called the Jhome Token Service, which answered
+   `GET /wallets/320/balance` → **404 with an empty body**. `JTSError` was
+   unhandled on the route, so uvicorn returned a 500. The customer was signed in
+   correctly and then shown an Internal Server Error.
+
+**Root cause of the 404:** the Token Service itself was broken, not Gootier and
+not the wallet. Its Railway deployment history shows a deploy at
+`2026-09-03T08:46:22Z` and then one titled **"Restore token service; refund +
+chargeback claw-back (merge 4a10e09)"** at `09:16:33Z`. The failures at 08:54:17
+sit inside that window. Its current container's logs only begin at 09:16:59, so
+the broken deployment's own logs are gone.
+
+**How the empty body identified it.** No JTS route can produce a 404 with an
+empty body — an unknown path returns `{"detail":"Not Found"}` (22 bytes), a
+missing/foreign wallet returns `{"detail":"Wallet not found"}`, a bad key
+returns 401. An empty-body 404 therefore came from in front of the app, which is
+what pinned this on the deployment rather than on wallet 320 or on the API key.
+Worth remembering: `POST /wallets` is a get-or-create that has no 404 branch at
+all, so seeing it 404 was the tell.
+
+**The outage is over and nothing is lost.** Verified from inside Gootier's own
+container (`railway ssh --project c6ffd880-… --service gootier`, running a probe
+through `services.env_config.get_env` so production's real config is used, and
+printing only status codes):
+
+```
+GET /health              -> 200
+GET /wallets/320/balance -> 200  {"wallet_id":320,"balance_tokens":250000,...}
+```
+
+**What this branch changes.** The outage is somebody else's; the 500 is ours.
+Four page renders and one JSON endpoint called `balance_tokens()` with no
+handling, so any Token Service blip took the page down:
+
+| call site | page |
+|---|---|
+| `routes/web_routes.py` dashboard | `/dashboard` — where the Backoffice handoff lands |
+| `routes/web_routes.py` studio_page | `/studio` |
+| `routes/media_routes.py` assets_page | `/assets` |
+| `routes/media_routes.py` media_catalog | `/api/media/catalog` — the generation modals open on this |
+| `routes/stripe_routes.py` billing_page | `/billing` — **the page you go to when you run out** |
+
+Added `services/token_wallet.balance_tokens_or_none()`, which returns `None`
+when JTS cannot answer (both `JTSError` and raw transport failures — `httpx`
+connect/read errors are not `JTSError` subclasses), and moved those five call
+sites onto it. `None` renders as an em-dash, not `0`: an unreachable service
+means the balance is *unknown*, and `0` reads as "you are out of tokens", which
+would be a false statement that also aims the customer at the purchase page for
+no reason.
+
+**Deliberately NOT changed: `check_sufficient`.** It still raises. Failing open
+on a label and failing open on an authorization are different decisions — a
+balance we cannot read is not a balance we may authorize a charge against.
+`tests/test_balance_render_degrades.py` pins that distinction with a test, so a
+future "make it consistent" pass has to argue with it rather than quietly widen
+the fail-open into the spend gate.
+
+**Tests:** `tests/test_balance_render_degrades.py` (13 cases), RED first — the
+four page cases failed with the literal production error,
+`services.jts_client.JTSError: get_balance failed: 404`, before the fix. Full
+suite: **113 passed, 2 failed**, the two failures being the same long-standing
+`tests/test_affiliates_integration.py` `env_configs` gap; re-confirmed this
+session by running that file in a throwaway worktree at unmodified
+`origin/main`, which fails identically.
+
+**Trap found the hard way (again):** the primary checkout at
+`Projects/gootier-app/Gootier` was **31 commits behind `origin/main`** and dirty
+with unrelated in-progress work (`display.py`, `static/js/token-guard.js`,
+`static/css/auth-kit.css`, plus modified auth/billing templates — somebody's
+compact-token-display and auth-kit work). Untouched. This branch was built in a
+fresh worktree at `.worktrees/balance-degrade` off `origin/main`. That in-flight
+work looks like it will also touch `templates/billing.html`'s balance line and
+add a `tokens` Jinja filter, so expect a small conflict there and prefer the
+filter version once it lands — this branch only stops the `None` from rendering
+as the literal string "None", it does not add compact K/M formatting.
+
+**Redeploy:** merge the PR; the normal Railway deploy for the `gootier` service
+applies. No env var changes.
+
+**Still open:**
+- Nothing in this repo re-checks the Token Service's health, so a future JTS
+  outage is still invisible here until a customer hits it. Gootier is not
+  registered with the fleet monitor for that dependency.
+- The Backoffice renders its own "could not sign you in" page only when Gootier
+  refuses the *handoff*. A 500 from a Gootier page AFTER a successful handoff is
+  invisible to the Backoffice, which by then has already 303'd the browser away.
+  Nothing to fix here, but that is why this looked like a Backoffice problem.

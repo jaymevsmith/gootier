@@ -1,6 +1,6 @@
 ---
 phase: live
-milestone: "Backoffice connected-app SSO handoff LIVE 2026-09-02, whole-branch review passed after fixing a broken wallet-grouping seam bug; PR open against main"
+milestone: "Backoffice SSO handoff LIVE; hardening balance renders so a Token Service outage degrades to an em-dash instead of a 500 (branch harden-balance-render)"
 progress: 98
 tags: [fastapi, sqlalchemy, stripe, fal-ai, anthropic]
 connects_to:
