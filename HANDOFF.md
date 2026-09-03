@@ -436,3 +436,42 @@ applies. No env var changes.
   refuses the *handoff*. A 500 from a Gootier page AFTER a successful handoff is
   invisible to the Backoffice, which by then has already 303'd the browser away.
   Nothing to fix here, but that is why this looked like a Backoffice problem.
+
+**Merged and deployed (2026-09-03).** [PR #9](https://github.com/jaymevsmith/gootier/pull/9)
+merged to `main` as `8b70366`; Railway's GitHub integration auto-triggered the
+build 2 seconds later, so no `railway up` was run — worth noting, because the
+primary checkout is 31 commits behind and deploying from it by hand would have
+shipped a rollback. New deployment `1c358f16-13cc-45df-bcbc-be8710db3d61`
+(previously `5ba6d779`), service Online.
+
+Verified on the running container, not from the deploy's exit status:
+
+```
+RUNG3 balance_tokens_or_none present: True
+RUNG3 routes.web_routes    uses_or_none=True old_unguarded_left=0
+RUNG3 routes.stripe_routes uses_or_none=True old_unguarded_left=0
+RUNG3 routes.media_routes  uses_or_none=True old_unguarded_left=0
+RUNG5 degraded (JTS broken) -> None PASS
+RUNG5 healthy (live JTS)  -> 250000 PASS
+```
+
+`old_unguarded_left=0` is the part that matters: it counts remaining bare
+`balance_tokens(db, user)` calls in each deployed route module, so it fails loudly
+if a call site was missed or an old image is still serving.
+
+Then the reported click itself, end to end — a handoff token minted for the same
+account and walked over the public URL exactly as the Backoffice does:
+
+```
+consume -> final url: /dashboard status: 200
+dashboard status: 200   is 500 error page: False
+  <div class="stat-value">250</div> <div class="stat-label">Tokens available</div>
+billing status: 200
+```
+
+The original symptom is gone and the balance renders its real value.
+
+**Redeploy command for this service, for next time:** none by hand — merge to
+`main` and the GitHub integration builds it. If a manual deploy is ever needed,
+run it from a worktree with `railway up --path-as-root .`, never from the primary
+checkout while it is behind.
