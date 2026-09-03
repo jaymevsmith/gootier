@@ -5,34 +5,46 @@
 {% block hero_lede %}Pick up where you left off. Your scheduled posts and AI drafts are right where you left them.{% endblock %}
 
 {% block content %}
-  <h3>Sign in</h3>
-  <p class="sub">Use your username or email to continue.</p>
+        <h1>Sign in</h1>
+        <p class="jauth-sub">Use your username or email to continue.</p>
 
-  {% if error %}<div class="alert alert-danger py-2">{{ error }}</div>{% endif %}
+        {% if error %}<p class="jauth-alert jauth-alert-error" role="alert">{{ error }}</p>{% endif %}
 
-  <a href="/oauth/google/start" class="btn-google w-100" role="button">
-    {% include "_google_g.html" %}
-    <span>Continue with Google</span>
-  </a>
-  <div class="auth-divider"><span>or</span></div>
+        <a href="/oauth/google/start" class="jauth-btn jauth-btn-oauth" role="button">
+          {% include "_google_g.html" %}
+          Continue with Google
+        </a>
 
-  <form method="post" action="/login">
-    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-    <div class="mb-3">
-      <label class="form-label">Username or email</label>
-      <input class="form-control" name="username" required autofocus>
-    </div>
-    <div class="mb-2">
-      <label class="form-label">Password</label>
-      <input type="password" class="form-control" name="password" required>
-    </div>
-    <div class="text-end mb-4">
-      <a href="/forgot-password" class="small">Forgot password?</a>
-    </div>
-    <button type="submit" class="btn tj-grad-btn w-100">Sign in</button>
-  </form>
+        <div class="jauth-divider">or</div>
 
-  <p class="text-center mt-4 mb-0 text-muted">
-    New to Gootier? <a href="/signup">Create your account</a>
-  </p>
+        <form method="post" action="/login">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <div class="jauth-field">
+            <label for="username">Username or email</label>
+            <div class="jauth-input">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="8" r="3.6"/><path d="M4.5 20a7.5 7.5 0 0115 0"/></svg>
+              <input id="username" name="username" type="text" required autocomplete="username" placeholder="yourhandle" autofocus />
+            </div>
+          </div>
+          <div class="jauth-field">
+            <label for="password">Password</label>
+            <div class="jauth-input has-toggle">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="10" width="16" height="10.5" rx="2.5"/><path d="M8 10V7.5a4 4 0 018 0V10"/></svg>
+              <input id="password" name="password" type="password" required autocomplete="current-password" placeholder="Enter your password" />
+              <button type="button" class="jauth-pw-toggle" data-target="password" aria-label="Show password" aria-pressed="false">
+                <svg class="eye" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.2 12S5.8 5.5 12 5.5 21.8 12 21.8 12 18.2 18.5 12 18.5 2.2 12 2.2 12z"/><circle cx="12" cy="12" r="3.1"/></svg>
+<svg class="eye-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.6 6.1A9.6 9.6 0 0112 6c6.2 0 9.8 6 9.8 6a17.6 17.6 0 01-3.4 4.1M6.3 7.9A17.5 17.5 0 002.2 12S5.8 18 12 18a9.7 9.7 0 004-.8"/><path d="M9.9 9.9a3 3 0 004.2 4.2"/><path d="M3 3l18 18"/></svg>
+              </button>
+            </div>
+          </div>
+
+          <div class="jauth-row">
+            <span></span>
+            <a class="jauth-link" href="/forgot-password">Forgot password?</a>
+          </div>
+
+          <button type="submit" class="jauth-btn jauth-btn-primary">Sign in</button>
+        </form>
+
+        <p class="jauth-alt">New to Gootier? <a class="jauth-link" href="/signup">Create your account</a></p>
 {% endblock %}

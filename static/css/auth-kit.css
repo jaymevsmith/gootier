@@ -1,0 +1,408 @@
+/* ============================================================
+   Jhome auth kit — split brand-hero + form-card auth pages.
+
+   This file is byte-identical in every project. Everything that
+   varies per product is a CSS variable: each project ships a
+   small theme block overriding the :root values below (accent,
+   ground, surfaces), so the layout is shared but each site keeps
+   its own brand. Light-brand products just supply light values —
+   no rule below hardcodes a dark colour.
+
+   Layout contract the host page must honour:
+     <body class="jauth">            <- the flex shell
+       .jauth-aurora / .jauth-grain  <- optional ambient backdrop
+       <main class="jauth-split">
+         <section class="jauth-brand">   <- wordmark, headline, features
+         <section class="jauth-panel">   <- .jauth-card
+       <footer class="jauth-footer">     <- carries the brand credit
+   Nothing inside sets its own 100vh, so the credit always lands
+   on screen. See the max-height tier near the bottom.
+   ============================================================ */
+
+:root {
+  /* ---- ground + surfaces ---- */
+  --jauth-bg: #050509;
+  --jauth-card: rgba(16, 16, 25, .72);
+  --jauth-card-blur: 18px;
+  --jauth-border: rgba(255, 255, 255, .13);
+  --jauth-border-strong: rgba(255, 255, 255, .28);
+  --jauth-hairline: rgba(255, 255, 255, .07);
+  --jauth-hover: rgba(255, 255, 255, .06);
+  --jauth-shadow: 0 44px 90px -44px rgba(0, 0, 0, .95);
+
+  /* ---- type ---- */
+  --jauth-text: #f0f0f6;
+  --jauth-dim: #a3a3ba;
+  --jauth-faint: #6f6f88;
+  --jauth-font-display: 'Space Grotesk', system-ui, -apple-system, sans-serif;
+  --jauth-font-ui: 'Manrope', system-ui, -apple-system, sans-serif;
+
+  /* ---- brand ---- */
+  --jauth-accent: #8b6cff;
+  --jauth-accent-2: #ff4fa3;
+  --jauth-accent-3: #4fd6ff;
+  --jauth-accent-4: #ff9a5a;
+  --jauth-grad: linear-gradient(135deg, var(--jauth-accent), var(--jauth-accent-2) 55%, var(--jauth-accent-4));
+  --jauth-on-accent: #ffffff;
+  --jauth-glow: rgba(139, 108, 255, .8);
+  --jauth-link: #a68bff;
+  --jauth-link-hover: #c3b2ff;
+
+  /* ---- form ---- */
+  --jauth-input-bg: rgba(255, 255, 255, .035);
+  --jauth-input-bg-focus: rgba(255, 255, 255, .055);
+  --jauth-focus-ring: rgba(139, 108, 255, .16);
+  --jauth-focus-border: rgba(139, 108, 255, .70);
+
+  /* ---- messages ---- */
+  --jauth-err-bg: rgba(248, 113, 113, .10);
+  --jauth-err-border: rgba(248, 113, 113, .34);
+  --jauth-err-text: #fca5a5;
+  --jauth-ok-bg: rgba(79, 214, 255, .09);
+  --jauth-ok-border: rgba(79, 214, 255, .30);
+  --jauth-ok-text: #9ee6ff;
+
+  /* ---- ambient backdrop ---- */
+  --jauth-aurora-1: #8b6cff; --jauth-aurora-o1: .30;
+  --jauth-aurora-2: #ff4fa3; --jauth-aurora-o2: .20;
+  --jauth-aurora-3: #4fd6ff; --jauth-aurora-o3: .13;
+  --jauth-grain: rgba(255, 255, 255, .05);
+  --jauth-grain-opacity: .35;
+  --jauth-footer-bg: rgba(5, 5, 9, .72);
+}
+
+.jauth {
+  margin: 0;
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  background: var(--jauth-bg);
+  color: var(--jauth-text);
+  font-family: var(--jauth-font-ui);
+  font-size: 17px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
+}
+.jauth *, .jauth *::before, .jauth *::after { box-sizing: border-box; }
+
+.jauth-sr {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
+
+/* ---------- embedded in a host app shell ----------
+   When the surrounding app already draws the page frame AND the brand credit
+   (lumify: Navbar + Footer + MobileNav), the kit must not claim a viewport
+   minimum — that would push the host's credit below the fold on every screen.
+   Take content height instead and let the host footer follow. */
+.jauth.jauth-embedded { min-height: 0; }
+/* .jauth-split is flex:1 (flex-basis:0) so it fills a viewport-height
+   shell. With no height to fill, basis 0 collapses the whole page to
+   nothing — embedded, it sizes to its content instead. */
+.jauth.jauth-embedded .jauth-split { flex: none; }
+
+/* ---------- ambient backdrop ---------- */
+.jauth-aurora { position: fixed; inset: 0; z-index: 0; pointer-events: none; overflow: hidden; }
+.jauth-aurora span { position: absolute; border-radius: 50%; filter: blur(110px); }
+.jauth-aurora .a1 { width: 640px; height: 640px; top: -240px; left: -170px; background: var(--jauth-aurora-1); opacity: var(--jauth-aurora-o1); }
+.jauth-aurora .a2 { width: 520px; height: 520px; bottom: -240px; left: 8%;   background: var(--jauth-aurora-2); opacity: var(--jauth-aurora-o2); }
+.jauth-aurora .a3 { width: 580px; height: 580px; top: 14%; right: -260px;    background: var(--jauth-aurora-3); opacity: var(--jauth-aurora-o3); }
+.jauth-grain {
+  position: fixed; inset: 0; z-index: 0; pointer-events: none;
+  opacity: var(--jauth-grain-opacity);
+  background-image: radial-gradient(var(--jauth-grain) 1px, transparent 1px);
+  background-size: 44px 44px;
+  -webkit-mask-image: radial-gradient(circle at 32% 30%, #000, transparent 76%);
+  mask-image: radial-gradient(circle at 32% 30%, #000, transparent 76%);
+}
+
+/* ---------- split ---------- */
+.jauth-split {
+  position: relative; z-index: 1; flex: 1;
+  width: 100%; max-width: 1400px; margin: 0 auto;
+  padding: 56px 40px;
+  display: grid; grid-template-columns: 1fr minmax(0, 560px);
+  align-items: center; gap: 56px;
+}
+
+/* ---------- brand column ---------- */
+.jauth-brand { max-width: 560px; }
+.jauth-logo { display: inline-block; text-decoration: none; color: inherit; }
+.jauth-logo img, .jauth-logo svg.jauth-mark { max-height: 62px; width: auto; display: block; }
+.jauth-wordmark {
+  display: block; font-family: var(--jauth-font-display);
+  font-size: clamp(40px, 5.2vw, 64px);
+  font-weight: 700; letter-spacing: .18em; line-height: 1;
+  text-indent: .18em; /* balances the trailing letter-spacing */
+}
+.jauth-wordmark .hi {
+  background: var(--jauth-grad);
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+  filter: drop-shadow(0 0 18px var(--jauth-glow));
+}
+.jauth-domain {
+  display: block; margin-top: 14px;
+  font-size: 20px; font-weight: 600; letter-spacing: -.01em; color: var(--jauth-dim);
+}
+.jauth-domain .tld {
+  background: var(--jauth-grad);
+  -webkit-background-clip: text; background-clip: text; color: transparent; font-weight: 700;
+}
+
+.jauth-headline {
+  margin: 52px 0 0; font-family: var(--jauth-font-display);
+  font-size: clamp(32px, 3.9vw, 48px); font-weight: 700;
+  letter-spacing: -.025em; line-height: 1.08; color: var(--jauth-text);
+}
+.jauth-headline .grad {
+  background: var(--jauth-grad);
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+}
+.jauth-lead {
+  margin: 20px 0 0; max-width: 46ch;
+  font-size: 18px; line-height: 1.65; color: var(--jauth-dim);
+}
+
+.jauth-features {
+  margin: 54px 0 0; padding: 0; list-style: none;
+  display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 22px;
+  max-width: 520px;
+}
+.jauth-features li { text-align: center; }
+.jauth-features svg { width: 30px; height: 30px; margin-bottom: 12px; }
+.jauth-features b { display: block; font-size: 16px; font-weight: 700; letter-spacing: -.01em; }
+.jauth-features span { display: block; margin-top: 4px; font-size: 14px; line-height: 1.4; color: var(--jauth-faint); }
+.jauth-features .f1 b, .jauth-features .f1 svg { color: var(--jauth-accent); }
+.jauth-features .f2 b, .jauth-features .f2 svg { color: var(--jauth-accent-2); }
+.jauth-features .f3 b, .jauth-features .f3 svg { color: var(--jauth-accent-3); }
+.jauth-features .f4 b, .jauth-features .f4 svg { color: var(--jauth-accent-4); }
+
+/* ---------- brand lockup ----------
+   MIRROR THE HOST APP'S OWN NAV BRAND TREATMENT — same element order, same
+   casing, same accent — just scaled up for the hero. The auth page is the
+   same brand as the app behind it, so it must not invent its own wordmark
+   (no uppercasing a mixed-case name, no re-tracking, no moving the mark).
+   Copy the app's nav markup and let this carry the sizing. */
+.jauth-lockup {
+  display: flex; align-items: center; gap: .55em;
+  font-family: var(--jauth-font-display);
+  font-weight: 700; letter-spacing: -.02em; line-height: 1;
+  font-size: clamp(28px, 3.4vw, 44px);
+}
+.jauth-lockup img, .jauth-lockup svg { height: 1.05em; width: auto; border-radius: .18em; flex: none; }
+/* the app's accent span, whatever it wraps */
+.jauth-lockup .accent {
+  background: var(--jauth-grad);
+  -webkit-background-clip: text; background-clip: text;
+  -webkit-text-fill-color: transparent; color: transparent;
+}
+
+/* ---------- card ---------- */
+.jauth-panel { display: flex; justify-content: center; }
+.jauth-card {
+  position: relative; overflow: hidden;
+  width: min(500px, 100%); padding: 44px 40px;
+  border-radius: 24px;
+  background: var(--jauth-card);
+  border: 1px solid var(--jauth-border);
+  -webkit-backdrop-filter: blur(var(--jauth-card-blur)); backdrop-filter: blur(var(--jauth-card-blur));
+  box-shadow: var(--jauth-shadow);
+}
+/* lit top edge */
+.jauth-card::before {
+  content: ""; position: absolute; top: 0; left: 0; right: 0; height: 1px;
+  background: var(--jauth-grad); opacity: .85;
+}
+.jauth-card h1 {
+  margin: 0; text-align: center; font-family: var(--jauth-font-display);
+  font-size: 32px; font-weight: 700; letter-spacing: -.025em; line-height: 1.15;
+  color: var(--jauth-text);
+}
+.jauth-sub { margin: 10px 0 32px; text-align: center; font-size: 17px; color: var(--jauth-dim); }
+.jauth-card p { margin: 0 0 16px; font-size: 17px; line-height: 1.6; color: var(--jauth-dim); }
+
+/* ---------- messages ---------- */
+.jauth-alert { margin: 0 0 20px; padding: 12px 16px; border-radius: 12px; font-size: 16px; line-height: 1.5; }
+.jauth-alert:empty { display: none; }
+.jauth-alert-error { background: var(--jauth-err-bg); border: 1px solid var(--jauth-err-border); color: var(--jauth-err-text); }
+.jauth-alert-ok { background: var(--jauth-ok-bg); border: 1px solid var(--jauth-ok-border); color: var(--jauth-ok-text); }
+/* JS-driven alerts start hidden and are revealed by .is-shown */
+.jauth-alert.jauth-js { display: none; }
+.jauth-alert.jauth-js.is-shown { display: block; }
+
+/* ---------- fields ---------- */
+.jauth-field { margin-bottom: 22px; }
+.jauth-field > label {
+  display: block; margin-bottom: 9px;
+  font-size: 15px; font-weight: 600; letter-spacing: -.005em; color: var(--jauth-text);
+}
+.jauth-input { position: relative; display: flex; align-items: center; }
+.jauth-input > svg {
+  position: absolute; left: 16px; width: 20px; height: 20px;
+  color: var(--jauth-faint); pointer-events: none;
+}
+.jauth-input input, .jauth-input select {
+  width: 100%; padding: 15px 16px 15px 48px;
+  font-family: inherit; font-size: 17px; line-height: 1.4;
+  color: var(--jauth-text); background: var(--jauth-input-bg);
+  border: 1px solid var(--jauth-border); border-radius: 13px;
+  transition: border-color .16s ease, box-shadow .16s ease, background .16s ease;
+}
+.jauth-input input::placeholder { color: var(--jauth-faint); }
+.jauth-input input:focus, .jauth-input select:focus {
+  outline: none; background: var(--jauth-input-bg-focus);
+  border-color: var(--jauth-focus-border);
+  box-shadow: 0 0 0 4px var(--jauth-focus-ring);
+}
+/* a field with no leading icon shouldn't reserve room for one */
+.jauth-input.no-icon input, .jauth-input.no-icon select { padding-left: 16px; }
+.jauth-input.has-toggle input { padding-right: 54px; }
+.jauth-pw-toggle {
+  position: absolute; right: 8px; display: flex; align-items: center; justify-content: center;
+  width: 38px; height: 38px; padding: 0; border: 0; border-radius: 10px;
+  background: none; color: var(--jauth-faint); cursor: pointer;
+  transition: color .16s ease, background .16s ease;
+}
+.jauth-pw-toggle:hover { color: var(--jauth-text); background: var(--jauth-hover); }
+.jauth-pw-toggle:focus-visible { outline: 2px solid var(--jauth-focus-border); outline-offset: 2px; }
+.jauth-pw-toggle svg { width: 20px; height: 20px; }
+.jauth-pw-toggle .eye-off { display: none; }
+.jauth-pw-toggle.is-revealed .eye { display: none; }
+.jauth-pw-toggle.is-revealed .eye-off { display: block; }
+.jauth-hint { margin: 8px 0 0; font-size: 14px; color: var(--jauth-faint); }
+
+/* ---------- options row ---------- */
+.jauth-row {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 16px; margin: 0 0 26px; font-size: 16px;
+}
+.jauth-remember { display: inline-flex; align-items: center; gap: 10px; cursor: pointer; color: var(--jauth-dim); }
+.jauth-remember input { width: 19px; height: 19px; margin: 0; cursor: pointer; accent-color: var(--jauth-accent); }
+.jauth-link { color: var(--jauth-link); text-decoration: none; font-weight: 600; }
+.jauth-link:hover { color: var(--jauth-link-hover); text-decoration: underline; }
+
+/* ---------- buttons ---------- */
+.jauth-btn {
+  display: flex; align-items: center; justify-content: center; gap: 11px;
+  width: 100%; box-sizing: border-box;
+  font-family: inherit; font-size: 17px; font-weight: 700; letter-spacing: -.005em;
+  padding: 16px 24px; border-radius: 14px; border: 1px solid transparent;
+  text-decoration: none; cursor: pointer;
+  transition: transform .18s ease, box-shadow .18s ease, background .18s ease, border-color .18s ease;
+}
+.jauth-btn-primary {
+  background: var(--jauth-grad); color: var(--jauth-on-accent);
+  box-shadow: 0 14px 34px -14px var(--jauth-glow);
+}
+.jauth-btn-primary:hover:not(:disabled) { transform: translateY(-2px); box-shadow: 0 20px 46px -16px var(--jauth-glow); }
+.jauth-btn-primary:disabled { opacity: .55; cursor: progress; transform: none; }
+.jauth-btn-oauth { background: var(--jauth-input-bg); color: var(--jauth-text); border-color: var(--jauth-border); }
+.jauth-btn-oauth:hover { background: var(--jauth-hover); border-color: var(--jauth-border-strong); transform: translateY(-2px); }
+.jauth-btn-oauth svg { width: 20px; height: 20px; }
+
+/* ---------- divider ---------- */
+.jauth-divider { display: flex; align-items: center; gap: 16px; margin: 26px 0; font-size: 15px; color: var(--jauth-faint); }
+.jauth-divider::before, .jauth-divider::after { content: ""; flex: 1; height: 1px; background: var(--jauth-border); }
+
+/* ---------- card footer ---------- */
+.jauth-alt { margin: 30px 0 0; text-align: center; font-size: 16px; color: var(--jauth-dim); }
+.jauth-legal { margin: 18px 0 0; text-align: center; font-size: 14px; color: var(--jauth-faint); }
+.jauth-legal a { color: var(--jauth-faint); text-decoration: underline; }
+.jauth-legal a:hover { color: var(--jauth-dim); }
+
+/* ---------- page footer (carries the brand credit) ---------- */
+.jauth-footer {
+  position: relative; z-index: 1;
+  display: flex; flex-wrap: wrap; align-items: center; gap: 10px 28px;
+  padding: 16px 40px calc(16px + env(safe-area-inset-bottom));
+  border-top: 1px solid var(--jauth-hairline);
+  background: var(--jauth-footer-bg);
+  -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px);
+  font-size: 14px; color: var(--jauth-faint);
+}
+.jauth-footer a { color: var(--jauth-faint); text-decoration: none; }
+.jauth-footer a:hover { color: var(--jauth-dim); text-decoration: underline; }
+.jauth-footer .f-left { flex: 1 1 220px; }
+.jauth-footer .f-mid { flex: 1 1 240px; text-align: center; opacity: .85; }
+.jauth-footer .f-right { flex: 1 1 220px; display: flex; gap: 14px; justify-content: flex-end; }
+
+/* ---------- short viewports ----------
+   The credit is the shell's last child, so a card taller than the
+   viewport pushes it below the fold. A generous card is ~680px on
+   its own, which beats a 1280x720 laptop — compact the rhythm
+   rather than let the credit fall off screen. */
+@media (min-width: 1081px) and (max-height: 900px) {
+  .jauth-split { padding: 16px 40px; gap: 40px; }
+  .jauth-card { padding: 30px 34px; }
+  .jauth-card h1 { font-size: 28px; }
+  .jauth-sub { margin-bottom: 22px; font-size: 16px; }
+  .jauth-field { margin-bottom: 16px; }
+  .jauth-row { margin-bottom: 20px; }
+  .jauth-btn { padding: 14px 24px; }
+  .jauth-divider { margin: 18px 0; }
+  .jauth-alt { margin-top: 18px; }
+  .jauth-legal { margin-top: 12px; }
+  .jauth-headline { margin-top: 32px; }
+  .jauth-lead { margin-top: 16px; }
+  .jauth-features { margin-top: 32px; }
+}
+
+/* ---------- stacked ---------- */
+@media (max-width: 1080px) {
+  .jauth-split {
+    grid-template-columns: 1fr; justify-items: center; text-align: center;
+    gap: 44px; padding: 44px 24px;
+  }
+  .jauth-brand { max-width: 620px; }
+  .jauth-lead { margin-left: auto; margin-right: auto; }
+  .jauth-headline { margin-top: 34px; }
+  .jauth-features { margin: 38px auto 0; }
+  .jauth-panel { width: 100%; }
+  /* the split centres the brand column here — the form inside the card
+     still reads top-down-left, so don't let that inherit */
+  .jauth-card { text-align: left; }
+}
+
+/* ---------- phone ----------
+   The form is the point on a phone. `display: contents` dissolves the
+   brand <section> so its children can be reordered against the card,
+   which is its sibling in the grid: wordmark, form, then features.
+   Without this the brand block filled the whole first screen and the
+   form sat entirely below the fold. */
+@media (max-width: 640px) {
+  .jauth-split { padding: 26px 18px; gap: 26px; }
+  .jauth-brand { display: contents; }
+  .jauth-logo { order: 1; justify-self: center; text-align: center; }
+  .jauth-panel { order: 2; }
+  .jauth-features { order: 3; }
+  .jauth-headline, .jauth-lead { display: none; }
+  .jauth-wordmark { font-size: 40px; }
+  .jauth-domain { margin-top: 8px; font-size: 16px; }
+  .jauth-features {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 14px 8px; margin: 0 auto; max-width: 360px;
+  }
+  .jauth-features svg { width: 26px; height: 26px; margin-bottom: 8px; }
+  .jauth-features b { font-size: 15px; }
+  .jauth-features span { font-size: 14px; }
+  .jauth-card { padding: 32px 22px; border-radius: 20px; }
+  .jauth-card h1 { font-size: 27px; }
+  .jauth-row { flex-wrap: wrap; }
+  .jauth-footer { padding: 16px 20px calc(16px + env(safe-area-inset-bottom)); }
+}
+
+/* Three footer zones side by side need ~800px of usable width; below
+   that they stack into centred rows instead of wrapping mid-phrase. */
+@media (max-width: 900px) {
+  .jauth-footer { justify-content: center; gap: 8px 20px; }
+  .jauth-footer .f-left, .jauth-footer .f-mid, .jauth-footer .f-right {
+    flex: 1 1 100%; text-align: center; justify-content: center;
+  }
+  .jauth-footer a { white-space: nowrap; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .jauth-btn:hover { transform: none; }
+  .jauth-btn, .jauth-input input, .jauth-pw-toggle { transition: none; }
+}

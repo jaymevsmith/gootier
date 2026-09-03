@@ -110,6 +110,9 @@ def balance_tokens_or_none(db: Session, user: User) -> Optional[int]:
         return None
 
 
+PURCHASE_URL = "/billing"
+
+
 def check_sufficient(db: Session, user: User, estimated_tokens: int) -> None:
     """Soft pre-flight gate — not atomic, purely UX (see design doc 'Debit timing').
     Raises 402 if the current balance clearly can't cover the estimate."""
@@ -121,10 +124,19 @@ def check_sufficient(db: Session, user: User, estimated_tokens: int) -> None:
         # rounding is the documented fallback for a response shape that doesn't
         # carry a `_display` field yet; this isn't a "recompute instead of
         # rendering `_display`" oversight.
+        # House rule: the 402 body names this app's purchase page, so the client
+        # can send the user there to top up instead of dead-ending on an error.
+        # Structured, not a bare string, so the interceptor can act on it.
         raise HTTPException(
             status_code=402,
-            detail=f"Insufficient tokens: you have {current // 1000}, this needs "
-                   f"about {estimated_tokens // 1000}. Top up at /billing.",
+            detail={
+                "error": "insufficient_tokens",
+                "message": (f"You have {current // 1000} tokens; this needs about "
+                            f"{estimated_tokens // 1000}."),
+                "purchase_url": PURCHASE_URL,
+                "balance_display": current // 1000,
+                "required_display": estimated_tokens // 1000,
+            },
         )
 
 

@@ -4,6 +4,10 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}Gootier{% endblock %}</title>
+  <meta name="theme-color" content="#f5f6fa">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
   <link rel="stylesheet" href="/static/css/colors_and_type.css">
@@ -11,7 +15,6 @@
   {% if request.cookies.get('gootier_theme') == 'aurora' %}
   <link rel="stylesheet" href="/static/css/gootier-sleek.css">
   {% endif %}
-
   {# The auth pages extend THIS base, not base.html or public_base.html, so they
      did not inherit the manifest or the registration. `/` redirects to /login,
      so an unauthenticated visitor -- the only kind who sees these pages -- never
@@ -20,45 +23,99 @@
   <meta name="theme-color" content="#667eea">
   <link rel="icon" type="image/png" sizes="192x192" href="/static/icons/icon-192.png">
   <link rel="apple-touch-icon" href="/static/icons/apple-touch-icon.png">
+
+  {# auth-kit last so its .jauth-* rules win over the app design system;
+     the sheets above still style the toast container, progress bar and the
+     Bootstrap modal tj-notify.js builds. #}
+  <link rel="stylesheet" href="/static/css/auth-kit.css">
+  <style>
+    :root{
+      /* Gootier reads light — indigo/purple gradient on a soft grey,
+         straight from colors_and_type.css */
+      --jauth-bg:#f5f6fa;
+      --jauth-card:rgba(255,255,255,.94);
+      --jauth-border:#e5e7ef; --jauth-border-strong:#c7cbdd;
+      --jauth-hairline:#eef0f6; --jauth-hover:rgba(22,26,44,.05);
+      --jauth-shadow:0 30px 70px -40px rgba(22,26,44,.40);
+      --jauth-text:#161a2c; --jauth-dim:#4b5168; --jauth-faint:#8a90a6;
+      --jauth-accent:#5b6ee1; --jauth-accent-2:#7b5be1;
+      --jauth-accent-3:#4a5fd6; --jauth-accent-4:#e17b5b;
+      --jauth-grad:linear-gradient(135deg,#667eea 0%,#764ba2 100%);
+      --jauth-on-accent:#ffffff;
+      --jauth-glow:rgba(102,126,234,.42);
+      --jauth-link:#5b6ee1; --jauth-link-hover:#4a5fd6;
+      --jauth-input-bg:rgba(22,26,44,.03); --jauth-input-bg-focus:#ffffff;
+      --jauth-focus-ring:rgba(91,110,225,.18); --jauth-focus-border:rgba(91,110,225,.75);
+      --jauth-err-bg:rgba(200,40,60,.08); --jauth-err-border:rgba(200,40,60,.30); --jauth-err-text:#b02a3a;
+      --jauth-ok-bg:rgba(22,140,90,.09); --jauth-ok-border:rgba(22,140,90,.30); --jauth-ok-text:#0f7a4d;
+      --jauth-aurora-1:#667eea; --jauth-aurora-o1:.16;
+      --jauth-aurora-2:#764ba2; --jauth-aurora-o2:.12;
+      --jauth-aurora-3:#5b6ee1; --jauth-aurora-o3:.08;
+      --jauth-grain:rgba(22,26,44,.05); --jauth-grain-opacity:.20;
+      --jauth-footer-bg:rgba(255,255,255,.75);
+    }
+  </style>
+  {% block head %}{% endblock %}
 </head>
-<body data-theme="{{ 'aurora' if request.cookies.get('gootier_theme') == 'aurora' else 'light' }}">
+<body class="jauth" data-theme="{{ 'aurora' if request.cookies.get('gootier_theme') == 'aurora' else 'light' }}">
 
-<div class="auth-shell">
-  <section class="auth-hero">
-    <div class="brand-mark">Gootier</div>
-    <div>
-      <h2>{% block hero_title %}Run your whole marketing playbook from one place.{% endblock %}</h2>
-      <p>{% block hero_lede %}Connect your socials, compose campaigns, and let our AI draft and schedule the rest &mdash; while you focus on the brand.{% endblock %}</p>
-      <ul class="pillars">
-        <li><i class="fas fa-share-nodes"></i> One-click social connections via OAuth</li>
-        <li><i class="fas fa-wand-magic-sparkles"></i> AI campaign builder from your plan + cadence</li>
-        <li><i class="fas fa-calendar-check"></i> Schedule once, post everywhere</li>
+  <div class="jauth-aurora" aria-hidden="true"><span class="a1"></span><span class="a2"></span><span class="a3"></span></div>
+  <div class="jauth-grain" aria-hidden="true"></div>
+
+  <main class="jauth-split">
+
+    <section class="jauth-brand">
+      <a class="jauth-logo" href="/">
+        <span class="jauth-lockup"><span>Gootier</span></span>
+      </a>
+
+      <h2 class="jauth-headline">{% block hero_title %}Run your whole marketing playbook from one place.{% endblock %}</h2>
+      <p class="jauth-lead">{% block hero_lede %}Connect your socials, compose campaigns, and let AI draft and schedule the rest &mdash; while you focus on the brand.{% endblock %}</p>
+
+      <ul class="jauth-features">
+        <li class="f1">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="18" cy="5" r="2.6"/><circle cx="6" cy="12" r="2.6"/><circle cx="18" cy="19" r="2.6"/><path d="M8.4 10.8l7.2-4.2M8.4 13.2l7.2 4.2"/></svg>
+          <b>Connect</b><span>One-click OAuth</span>
+        </li>
+        <li class="f2">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M18.5 15.5l.8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8z"/></svg>
+          <b>Draft</b><span>AI campaigns</span>
+        </li>
+        <li class="f3">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3.5" y="5" width="17" height="16" rx="3"/><path d="M3.5 10h17M8 3v4M16 3v4"/><path d="M9 14.5l2 2 4-4"/></svg>
+          <b>Schedule</b><span>Once, everywhere</span>
+        </li>
+        <li class="f4">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 20.5h17"/><rect x="5" y="12" width="3.4" height="6" rx="1"/><rect x="10.3" y="7.5" width="3.4" height="10.5" rx="1"/><rect x="15.6" y="4" width="3.4" height="14" rx="1"/></svg>
+          <b>Measure</b><span>What landed</span>
+        </li>
       </ul>
-    </div>
-    <div class="footnote">
-      &copy; Gootier. Built for solo brands, agencies, and everything in between.<br>
-      Powered by <a href="https://jhomeautomation.com" target="_blank" rel="noopener noreferrer" style="color:#fff; text-decoration:underline; opacity:.85;">Jhome Automation</a>
-      <div style="margin-top:.5rem; font-size:.78rem; opacity:.75;">
-        <a href="/privacy" style="color:#fff; text-decoration:underline;">Privacy</a>
-        &middot;
-        <a href="/terms"   style="color:#fff; text-decoration:underline;">Terms</a>
+    </section>
+
+    <section class="jauth-panel">
+      <div class="jauth-card">
+        {% block content %}{% endblock %}
       </div>
-    </div>
-  </section>
+    </section>
 
-  <section class="auth-form-pane">
-    <div class="auth-form">
-      {% block content %}{% endblock %}
-    </div>
-  </section>
-</div>
+  </main>
 
-<div id="tj-progress-wrap"><div id="tj-progress-bar"></div></div>
-<div id="tj-toast-container" aria-live="polite" aria-atomic="true"></div>
+  <footer class="jauth-footer">
+    <span class="f-left">&copy; 2026 Gootier. Built for solo brands and agencies.</span>
+    <span class="f-mid"><a href="https://jhomeautomation.com" target="_blank" rel="noopener">Powered by Jhome Automation</a></span>
+    <span class="f-right">
+      <a href="/privacy">Privacy</a>
+      <a href="/terms">Terms</a>
+    </span>
+  </footer>
 
-<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
-<script src="/static/js/tj-notify.js"></script>
-{% block scripts %}{% endblock %}
+  <div id="tj-progress-wrap"><div id="tj-progress-bar"></div></div>
+  <div id="tj-toast-container" aria-live="polite" aria-atomic="true"></div>
+
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+  <script src="/static/js/auth-kit.js"></script>
+  <script src="/static/js/tj-notify.js"></script>
+  {% block scripts %}{% endblock %}
   <script>
     if ("serviceWorker" in navigator) {
       window.addEventListener("load", function () {

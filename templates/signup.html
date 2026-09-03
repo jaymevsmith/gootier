@@ -5,51 +5,60 @@
 {% block hero_lede %}Connect one social account, generate your first AI campaign, and schedule a week of content in under five minutes.{% endblock %}
 
 {% block content %}
-  <h3>Create your account</h3>
-  <p class="sub">14 days free. Cancel anytime.</p>
+        <h1>Create your account</h1>
+        <p class="jauth-sub">14 days free. Cancel anytime.</p>
 
-  {% if error %}<div class="alert alert-danger py-2">{{ error }}</div>{% endif %}
+        {% if error %}<p class="jauth-alert jauth-alert-error" role="alert">{{ error }}</p>{% endif %}
 
-  <a href="/oauth/google/start" class="btn-google w-100" role="button">
-    {% include "_google_g.html" %}
-    <span>Sign up with Google</span>
-  </a>
-  <p class="small text-muted text-center mt-2 mb-0">
-    By continuing with Google, you agree to our
-    <a href="/terms" target="_blank" rel="noopener">Terms</a> and
-    <a href="/privacy" target="_blank" rel="noopener">Privacy Policy</a>.
-  </p>
-  <div class="auth-divider"><span>or fill out the form</span></div>
+        <a href="/oauth/google/start" class="jauth-btn jauth-btn-oauth" role="button">
+          {% include "_google_g.html" %}
+          Sign up with Google
+        </a>
+        <p class="jauth-legal">By continuing with Google, you agree to our
+          <a href="/terms" target="_blank" rel="noopener">Terms</a> and
+          <a href="/privacy" target="_blank" rel="noopener">Privacy Policy</a>.</p>
 
-  <form method="post" action="/signup">
-    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-    {% if ref %}<input type="hidden" name="ref" value="{{ ref }}">{% endif %}
-    <div class="mb-3">
-      <label class="form-label">Username</label>
-      <input class="form-control" name="username" required pattern="[a-zA-Z0-9_-]{3,20}">
-      <div class="form-text">3-20 chars, letters/numbers/_/-</div>
-    </div>
-    <div class="mb-3">
-      <label class="form-label">Work email</label>
-      <input type="email" class="form-control" name="email" required>
-    </div>
-    <div class="mb-4">
-      <label class="form-label">Password</label>
-      <input type="password" class="form-control" name="password" required minlength="8">
-      <div class="form-text">Min 8 chars with upper, lower, and a number.</div>
-    </div>
-    <div class="form-check mb-3">
-      <input class="form-check-input" type="checkbox" id="tos-agree" required>
-      <label class="form-check-label small" for="tos-agree">
-        I agree to the
-        <a href="/terms" target="_blank" rel="noopener">Terms of Service</a> and
-        <a href="/privacy" target="_blank" rel="noopener">Privacy Policy</a>.
-      </label>
-    </div>
-    <button type="submit" class="btn tj-grad-btn w-100">Create account</button>
-  </form>
+        <div class="jauth-divider">or fill out the form</div>
 
-  <p class="text-center mt-4 mb-0 text-muted">
-    Already have an account? <a href="/login">Sign in</a>
-  </p>
+        <form method="post" action="/signup">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          {% if ref %}<input type="hidden" name="ref" value="{{ ref }}">{% endif %}
+          <div class="jauth-field">
+            <label for="username">Username</label>
+            <div class="jauth-input">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="8" r="3.6"/><path d="M4.5 20a7.5 7.5 0 0115 0"/></svg>
+              <input id="username" name="username" type="text" required placeholder="yourhandle" pattern="[a-zA-Z0-9_-]{3,20}" />
+            </div>
+            <p class="jauth-hint">3-20 characters — letters, numbers, _ or -</p>
+          </div>
+          <div class="jauth-field">
+            <label for="email">Work email</label>
+            <div class="jauth-input">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2.5" y="4.5" width="19" height="15" rx="3"/><path d="M3 7.5l9 6 9-6"/></svg>
+              <input id="email" name="email" type="email" required autocomplete="email" placeholder="you@company.com" />
+            </div>
+          </div>
+          <div class="jauth-field">
+            <label for="password">Password</label>
+            <div class="jauth-input has-toggle">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="10" width="16" height="10.5" rx="2.5"/><path d="M8 10V7.5a4 4 0 018 0V10"/></svg>
+              <input id="password" name="password" type="password" required autocomplete="new-password" placeholder="At least 8 characters" minlength="8" />
+              <button type="button" class="jauth-pw-toggle" data-target="password" aria-label="Show password" aria-pressed="false">
+                <svg class="eye" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.2 12S5.8 5.5 12 5.5 21.8 12 21.8 12 18.2 18.5 12 18.5 2.2 12 2.2 12z"/><circle cx="12" cy="12" r="3.1"/></svg>
+<svg class="eye-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.6 6.1A9.6 9.6 0 0112 6c6.2 0 9.8 6 9.8 6a17.6 17.6 0 01-3.4 4.1M6.3 7.9A17.5 17.5 0 002.2 12S5.8 18 12 18a9.7 9.7 0 004-.8"/><path d="M9.9 9.9a3 3 0 004.2 4.2"/><path d="M3 3l18 18"/></svg>
+              </button>
+            </div>
+            <p class="jauth-hint">Min 8 characters with upper, lower, and a number.</p>
+          </div>
+
+          <label class="jauth-remember" for="tos-agree" style="margin-bottom:22px">
+            <input class="form-check-input" type="checkbox" id="tos-agree" required>
+            <span>I agree to the <a class="jauth-link" href="/terms" target="_blank" rel="noopener">Terms of Service</a>
+              and <a class="jauth-link" href="/privacy" target="_blank" rel="noopener">Privacy Policy</a>.</span>
+          </label>
+
+          <button type="submit" class="jauth-btn jauth-btn-primary">Create account</button>
+        </form>
+
+        <p class="jauth-alt">Already have an account? <a class="jauth-link" href="/login">Sign in</a></p>
 {% endblock %}
