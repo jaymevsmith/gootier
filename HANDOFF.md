@@ -475,3 +475,70 @@ The original symptom is gone and the balance renders its real value.
 `main` and the GitHub integration builds it. If a manual deploy is ever needed,
 run it from a worktree with `railway up --path-as-root .`, never from the primary
 checkout while it is behind.
+
+
+## Compact K/M token display (2026-09-03)
+
+**What changed:** token counts now render `550` / `2K` / `750K` / `20M` instead
+of a plain integer, per the house rule. Adds `display.py` at the repo root with
+the canonical `format_tokens` (copied verbatim from the global `CLAUDE.md`, not
+re-derived, so every app in the fleet rounds identically) and registers it as a
+Jinja filter named `tokens`. The four balance surfaces now say
+`{{ credit_balance|tokens }}` / `{{ token_balance_display|tokens }}`:
+`dashboard.html`, `studio.html`, `assets.html`, `billing.html`.
+
+The filter also absorbs the `None` case, so the em-dash handling added earlier
+today collapses out of the templates — `None` is unknown, and unknown renders
+`—`, never `0`.
+
+**The trap, and it is specific to this repo: there is no shared Jinja
+environment.** Six routers each construct their own
+`Jinja2Templates(directory="templates")`, and each gets a private copy of the
+filter dict. Registering `tokens` on one is invisible to the other five, and the
+failure mode is a `TemplateAssertionError` at render time on whichever page was
+not re-tested — a 500, not a fallback. So `display.install_filters()` wraps the
+constructor at all five module-level sites, and `tests/test_display.py` walks
+`routes/*.py` to assert none was missed. Removing the registration from
+`media_routes.py` was confirmed to turn that test suite RED (6 failures) before
+shipping, so the guard is real and not decorative.
+
+The sixth instance is function-local, inside
+`oauth_routes._google_auth_fail`, and renders `login.html`, which shows no token
+counts. Left alone deliberately.
+
+**What was deliberately NOT changed:**
+- `/api/media/catalog`'s `balance` field stays an **integer**, not a formatted
+  string. The rule applies to the number being *rendered*; `balance_display`
+  stays an int on the wire so consumers keep working. Nothing in the app renders
+  that field today — the generation modals fetch it but never display it.
+- No JS `formatTokens` was added. The canonical JS implementation exists in the
+  house rule, but Gootier has no client-rendered token count to apply it to, and
+  shipping an unused copy invites it to drift from the Python one. Add it in the
+  same change as the first JS surface that needs it.
+- No `toLocaleString()` on a token count existed here to remove — the two hits
+  in the codebase are datetime formatting in the admin pages.
+
+**Tests:** `tests/test_display.py`, 40 cases — the house rule's table verbatim,
+the threshold/rounding edges (`999_999 -> "1M"` rather than `"1000K"`,
+`999_500 -> "999.5K"`, trailing `.0` dropped), the every-environment invariant,
+and each of the four pages rendered through its own router's environment with
+the number pulled out of its specific markup slot so a match elsewhere in the
+document cannot fake a pass. Full suite: **153 passed, 2 failed**, the two being
+the same long-standing `test_affiliates_integration.py` `env_configs` gap.
+
+**Trap found the hard way (mine):** wrapping the constructor in
+`install_filters(...)` broke the regex my own environment-scan test used to find
+the routers, so that parametrised test silently iterated over an EMPTY list and
+reported as a skip while appearing green. The only reason it was caught is a
+deliberate `test_the_scan_actually_finds_the_environments` guard asserting the
+scan finds >= 5. Any test that discovers its own parameters needs that guard, or
+"passed" can mean "never ran".
+
+**Heads-up for the primary checkout:** it has an UNTRACKED `display.py` with the
+same `format_tokens`. `display.py` is now tracked on `main`, so a `git pull`
+there will refuse with "untracked working tree file would be overwritten".
+Delete the local copy and take the tracked one — it is the same function plus
+`install_filters`. The in-flight `static/js/token-guard.js` is a different rule
+(the 402 purchase-page redirect) and is untouched by this work.
+
+**Redeploy:** none by hand — merge to `main` and the GitHub integration builds it.

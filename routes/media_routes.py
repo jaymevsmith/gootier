@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 
 from auth import get_current_user, get_current_user_optional
 from database import get_db
+from display import install_filters
 from models import MediaAsset, MediaJob, User, log_action
 from services.env_config import get_env
 from services.token_wallet import balance_tokens_or_none
@@ -37,7 +38,7 @@ def _webhook_url_for(request: Request, job_id: int, token: str) -> Optional[str]
     return f"{base}/webhooks/fal/{job_id}/{token}"
 
 router = APIRouter()
-templates = Jinja2Templates(directory="templates")
+templates = install_filters(Jinja2Templates(directory="templates"))
 
 VALID_KINDS = ["mascot", "person", "product", "other"]
 

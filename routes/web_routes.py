@@ -9,11 +9,12 @@ from sqlalchemy.orm import Session
 
 from auth import get_current_user_optional
 from database import get_db
+from display import install_filters
 from models import EmailBlast, MediaJob, SocialConnection, SocialPost, User
 from services.quotas import usage_summary
 
 router = APIRouter()
-templates = Jinja2Templates(directory="templates")
+templates = install_filters(Jinja2Templates(directory="templates"))
 
 # Bump this string whenever the privacy or terms copy materially changes — it
 # renders on both pages and signals to users that the policy was revised.
