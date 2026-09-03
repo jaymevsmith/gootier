@@ -41,7 +41,7 @@
   <div class="stat-card">
     <div class="stat-icon stat-icon-success"><i class="fas fa-coins"></i></div>
     <div>
-      <div class="stat-value">{{ credit_balance if credit_balance is not none else "—" }}</div>
+      <div class="stat-value">{{ credit_balance|tokens }}</div>
       <div class="stat-label">Tokens available</div>
     </div>
   </div>

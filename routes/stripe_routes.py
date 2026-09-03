@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from auth import get_current_user
 from database import get_db
+from display import install_filters
 from models import TierConfig, User, log_action
 from services.affiliates import affiliates
 from services.env_config import get_env
@@ -17,7 +18,7 @@ from services.env_config import get_env
 logger = logging.getLogger("gootier.stripe")
 
 router = APIRouter()
-templates = Jinja2Templates(directory="templates")
+templates = install_filters(Jinja2Templates(directory="templates"))
 
 
 def _stripe_secret() -> str: return get_env("STRIPE_SECRET_KEY", "")

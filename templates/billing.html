@@ -27,7 +27,7 @@
     <span class="ms-auto small text-muted">Used for image, video, and AI generation</span>
   </div>
   <div class="card-x-body">
-    <div class="display-5 fw-bold mb-3">{{ token_balance_display if token_balance_display is not none else "—" }} <span class="small-meta">tokens</span></div>
+    <div class="display-5 fw-bold mb-3">{{ token_balance_display|tokens }} <span class="small-meta">tokens</span></div>
     <div id="jhome-tokens"></div>
     <script src="{{ token_service_url }}/widget.js" data-app="{{ token_service_app_slug }}"></script>
     <script>

@@ -1,6 +1,6 @@
 ---
 phase: live
-milestone: "Backoffice SSO handoff LIVE; balance renders now degrade to an em-dash instead of 500ing on a Token Service outage (PR #9 merged + deployed 2026-09-03, verified on the running container)"
+milestone: "Backoffice SSO handoff LIVE; balance surfaces hardened against a Token Service outage and switched to compact K/M display (PRs #9, #11 merged + deployed 2026-09-03)"
 progress: 98
 tags: [fastapi, sqlalchemy, stripe, fal-ai, anthropic]
 connects_to:

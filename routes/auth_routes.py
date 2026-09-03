@@ -12,6 +12,7 @@ from auth import (
     validate_email, validate_password, validate_username, verify_password,
 )
 from database import get_db
+from display import install_filters
 from models import HandoffToken, User, log_action
 from services.affiliates import affiliates
 from services.csrf import get_or_create_token, verify_csrf
@@ -23,7 +24,7 @@ from services.handoff import hash_token
 logger = logging.getLogger("gootier.auth")
 
 router = APIRouter()
-templates = Jinja2Templates(directory="templates")
+templates = install_filters(Jinja2Templates(directory="templates"))
 RESET_TOKEN_TTL_MINUTES = 60
 VERIFY_TOKEN_TTL_HOURS = 24
 
