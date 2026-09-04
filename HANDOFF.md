@@ -143,3 +143,93 @@ and fails to import otherwise.
   `external_user_id` "1" / "2" during earlier local test runs was not checked.
   The empty `X-API-Key` most likely got a 401, but if the JTS `/wallets` endpoint
   is unauthenticated there may be junk wallets to clean up. Worth a look in JTS.
+
+## Hardened signup's post-commit tail against config-DB failures (2026-09-04)
+
+Follow-up to the 2026-09-02 entry, which flagged `_app_url()`'s unguarded
+`get_env()` as still open. This one **does** change production code.
+
+### The gap
+
+`signup_submit` commits the new User at auth_routes.py:141, then runs a tail of
+best-effort work. Three of the four steps were wrapped (`ensure_wallet`,
+`affiliates.report_signup`, `send_welcome_email`); the verification email was
+not. Two unguarded config reads sat on that path, each opening its own
+`database.SessionLocal()`:
+
+- `_app_url(request)` -> `get_env("APP_URL")`
+- `trigger_verification_email()` -> `send_email_verification()` ->
+  `_smtp_config()` -> five more `get_env()` calls
+
+A database blip in any of them raised straight out of the handler: a 500 for
+someone whose account **had** been created and who never got a session cookie,
+with nothing in the error to tell them they now have an account.
+
+Fixing only `_app_url` would have left the identical hole one frame deeper in
+`_smtp_config()`, so the fix covers the whole step.
+
+### Changes — `routes/auth_routes.py`
+
+- `_app_url()` catches a failed `get_env()` and degrades to the request's own
+  scheme + host. That fallback already existed for an unset `APP_URL`, so this
+  reuses a correct answer rather than inventing one. Also benefits
+  `forgot_password_submit` (auth_routes.py:294) and both `api_routes.py` call
+  sites (136, 151), which go through the same helper.
+- `trigger_verification_email(...)` at the signup call site is now wrapped with
+  `db.rollback()` + `logger.exception`, mirroring the `ensure_wallet` clause
+  directly above it. The verify token is committed by
+  `create_verification_token` *before* the SMTP reads happen, so it survives —
+  the user just doesn't get the email, and can resend from their profile.
+- `user_id = user.id` is captured right after `db.refresh(user)` and used for
+  `create_access_token(user_id)`. Non-obvious but load-bearing: `db.rollback()`
+  in a tail handler expires the instance, so every later `user.<attr>` read
+  becomes a fresh SELECT. Issuing the session cookie — the one step that must
+  not fail — no longer depends on the database still answering.
+
+### Trap: the new wrapper nearly ate an existing regression test
+
+`test_signup_succeeds_when_ensure_wallet_local_commit_fails` exists to prove the
+`db.rollback()` in the **ensure_wallet** except clause is load-bearing; it
+originally failed because the poisoned session blew up in
+`trigger_verification_email`'s commit. Wrapping that call could have made the
+test pass with the ensure_wallet rollback deleted — i.e. silently disarmed.
+
+Checked explicitly by deleting that `db.rollback()` and re-running: the test
+still fails, now on the `user.referral_code` read at auth_routes.py:172, which
+sits between the two clauses and is still unguarded. `PendingRollbackError`
+confirmed in the output. The guard is intact — but if that line is ever moved or
+wrapped, re-verify this test the same way rather than trusting it.
+
+### Tests
+
+`tests/test_signup_resilience.py` (new, 5 tests): `_app_url` falls back when the
+config read fails; `_app_url` still prefers a real configured value (control —
+this one passed before the fix); signup returns 303 + session cookie with the
+config DB unavailable; same when the verification step raises; and the User row
+actually survives in the database, so the 303 isn't coming from a rolled-back
+transaction.
+
+`tests/conftest.py`: new `unavailable_config_db` fixture points
+`database.SessionLocal` at a schema-less engine so every `get_env()` raises,
+while the request's injected session keeps working off `test_engine`. That
+asymmetry is the realistic shape of the failure (pool exhaustion / a blip
+opening a new connection), and is the exact condition that used to 500 signup.
+The `client` fixture moved here from `test_affiliates_integration.py` unchanged,
+since two files now use it.
+
+Verification: 4 of the 5 new tests fail against the pre-fix code for the right
+reason (`no such table: env_configs`) and pass after. **57 passed**, stable over
+3 consecutive runs, with and without a `gootier.db` present.
+
+### Still open
+
+- **`api_routes.py:137` has the same shape and was left alone.** The profile
+  email-change handler calls `trigger_verification_email` right after its own
+  `db.commit()`, unguarded, so a config-DB blip 500s a profile update that was
+  already saved. `_app_url` is now safe there, but the SMTP reads inside
+  `_smtp_config()` are not. Deliberately out of scope — different endpoint,
+  separate call. `api_routes.py:151` (`resend_verification`) should **not** be
+  wrapped: sending is the point of that request, so a failure belongs in the
+  response.
+- `get_env()` still opens its own session rather than accepting one. Both
+  entries in this log work around that rather than fixing it.

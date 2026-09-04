@@ -5,22 +5,16 @@ plain pytest functions using the shared `db` fixture from tests/conftest.py
 (isolated in-memory SQLite). For the signup flow specifically we also spin up
 a minimal FastAPI app around just routes/auth_routes.router (rather than the
 full main.py app, which starts a background scheduler task on lifespan) and
-drive it with FastAPI's TestClient. The AffiliatesClient's network methods are
-patched with unittest.mock so no real HTTP call is made.
+drive it with FastAPI's TestClient — that app is conftest's `client` fixture.
+The AffiliatesClient's network methods are patched with unittest.mock so no
+real HTTP call is made.
 """
 from unittest.mock import patch
 
-import pytest
-from fastapi import FastAPI
-from fastapi.testclient import TestClient
-from sqlalchemy.orm import sessionmaker
-
 from auth import COOKIE_NAME
-from database import get_db
 import models  # noqa: F401 — ensures all models register on Base.metadata
 from models import User
 from routes import auth_routes, stripe_routes
-from services.csrf import CSRFCookieMiddleware
 
 
 def test_user_model_has_referral_code_column(db):
@@ -41,35 +35,6 @@ def test_user_model_has_referral_code_column(db):
     db.commit()
     db.refresh(user)
     assert user.referral_code == "JAYS10"
-
-
-@pytest.fixture
-def client(test_engine):
-    """A minimal app wired with just auth_routes, the shared per-test in-memory
-    DB, and the CSRF cookie middleware (auth_routes' signup/login POSTs
-    require Depends(verify_csrf)).
-
-    Uses conftest's `test_engine` rather than building its own, so the request
-    session and the sessions `get_env()` opens internally (via conftest's
-    `_isolate_session_local`) are the same database — see that module's
-    docstring for why that matters.
-    """
-    TestingSession = sessionmaker(bind=test_engine)
-
-    def override_get_db():
-        session = TestingSession()
-        try:
-            yield session
-        finally:
-            session.close()
-
-    app = FastAPI()
-    app.add_middleware(CSRFCookieMiddleware)
-    app.include_router(auth_routes.router)
-    app.dependency_overrides[get_db] = override_get_db
-
-    with TestClient(app) as c:
-        yield c
 
 
 def _signup_form(client, ref=None, username="newuser", email="newuser@example.com"):

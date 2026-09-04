@@ -25,13 +25,17 @@ SessionLocal` at import time.
 """
 import httpx
 import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 import database
-from database import Base
+from database import Base, get_db
 import models  # noqa: F401 — ensures all models register on Base.metadata
+from routes import auth_routes
+from services.csrf import CSRFCookieMiddleware
 
 
 @pytest.fixture
@@ -101,3 +105,60 @@ def db(test_engine):
         yield session
     finally:
         session.close()
+
+
+@pytest.fixture
+def client(test_engine):
+    """A minimal app wired with just auth_routes, the shared per-test in-memory
+    DB, and the CSRF cookie middleware (auth_routes' signup/login POSTs
+    require Depends(verify_csrf)).
+
+    Deliberately not the full main.py app, which starts a background scheduler
+    on lifespan. Uses `test_engine` rather than building its own, so the request
+    session and the sessions `get_env()` opens internally (via
+    `_isolate_session_local`) are the same database — see the module docstring
+    above for why that matters.
+    """
+    TestingSession = sessionmaker(bind=test_engine)
+
+    def override_get_db():
+        session = TestingSession()
+        try:
+            yield session
+        finally:
+            session.close()
+
+    app = FastAPI()
+    app.add_middleware(CSRFCookieMiddleware)
+    app.include_router(auth_routes.router)
+    app.dependency_overrides[get_db] = override_get_db
+
+    with TestClient(app) as c:
+        yield c
+
+
+@pytest.fixture
+def unavailable_config_db(_isolate_session_local):
+    """Make every `get_env()` lookup fail the way a real database blip would.
+
+    Points `database.SessionLocal` — the session `get_env()` opens for itself —
+    at an engine with no schema, so `env_configs` reads raise
+    `OperationalError`, while the *request's* injected session keeps working off
+    `test_engine`. That asymmetry is the realistic shape of the failure (a
+    connection-pool exhaustion or a blip while opening a new connection), and
+    it is exactly the condition that used to 500 signup after the account row
+    was already committed.
+    """
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    # No create_all() on purpose — that is the whole point of the fixture.
+    original_bind = database.SessionLocal.kw.get("bind")
+    database.SessionLocal.configure(bind=engine)
+    try:
+        yield
+    finally:
+        database.SessionLocal.configure(bind=original_bind)
+        engine.dispose()
