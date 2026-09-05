@@ -233,3 +233,81 @@ reason (`no such table: env_configs`) and pass after. **57 passed**, stable over
   response.
 - `get_env()` still opens its own session rather than accepting one. Both
   entries in this log work around that rather than fixing it.
+
+## Same fix for the profile email-change endpoint (2026-09-05)
+
+Closes the item the 2026-09-04 entry left open.
+
+### The gap
+
+`routes/api_routes.py::update_profile` has the same post-commit shape as signup:
+it commits the new email address, then fires a verification email through the
+same unguarded chain (`trigger_verification_email()` ->
+`send_email_verification()` -> `_smtp_config()` -> five `get_env()` calls, each
+opening its own `SessionLocal`). A database blip returned a 500 for a profile
+update that had already been written — and `templates/profile.html` only
+reloads on a successful response, so the UI never showed the new address either.
+
+### Changes — `routes/api_routes.py`
+
+- `trigger_verification_email(...)` wrapped with `db.rollback()` +
+  `logger.exception`, mirroring `signup_submit`. The module had no logger; added
+  `gootier.api`.
+- `user_id` captured after `db.commit()` for the same reason as in
+  `signup_submit` — the rollback expires `user`, so the log line must not need a
+  fresh SELECT. Nothing after the wrapper touches `user`, so no other read had
+  to move.
+- The response now carries **`verification_email_sent`** when the email changed.
+  Silently swallowing the failure would have been its own bug: the caller would
+  sit waiting for mail that never went out. The key is **omitted** when the
+  email did not change — an always-present `false` reads as a failure. This is
+  additive; `templates/profile.html` ignores unknown keys.
+
+### Deliberately not changed
+
+- **`resend_verification` (api_routes.py:151+) is still unwrapped.** Sending is
+  the entire point of that request, so a failure has to reach the caller rather
+  than being absorbed into a cheerful `delivered: true`. Pinned by a test.
+  Considered and rejected: returning `delivered: False` on a config-DB failure
+  would fit the existing contract mechanically, but the UI renders that as
+  "Email service is not configured — ask the admin to check the logs for your
+  verification link", which is actively misleading during a blip because
+  `create_verification_token` may not have produced a link to find.
+- **`templates/profile.html` untouched.** It could warn on
+  `verification_email_sent === false`, but it reloads the page 600ms after a
+  successful save, which wipes any toast — and the reloaded page already shows
+  the unverified banner with a working resend button. The recovery path exists;
+  a toast that vanishes would be worse than nothing. Left as a UI decision.
+
+### Trap: the first version of the resend test passed for the wrong reason
+
+It asserted resend doesn't report `delivered: true` under a dead config DB — and
+failed, showing `200 / delivered: true`. Not a code bug: the seeded fixture user
+had `is_verified=True`, so the handler short-circuits at
+`if user.is_verified` and returns `delivered: True` without attempting a send.
+The test now marks the user unverified first. Worth remembering when writing
+anything against that endpoint — the happy-path short-circuit looks exactly like
+a successful send.
+
+### Tests
+
+`tests/test_profile_email_verification.py` (new, 5 tests) with its own
+`profile_client` fixture. That fixture resolves `get_current_user` from the
+**request's** session, the way the real dependency does — handing the handler a
+User attached to a different session would make its `db.commit()` a no-op and
+quietly invalidate every assertion in the file.
+
+Coverage: the change is saved and returns 200 with the config DB down; the
+response reports the mail as not sent; the happy path reports it as sent (so the
+flag isn't hardcoded); a nickname-only change omits the key; and resend still
+surfaces failure. 3 of the 5 fail against the pre-fix code.
+
+**62 passed**, stable over 3 consecutive runs, with and without a `gootier.db`
+present.
+
+### Still open
+
+- `get_env()` continues to open its own session instead of accepting one. All
+  three entries in this log work around that rather than fixing it. If it ever
+  takes a `db` parameter, the three `except Exception` wrappers added across
+  these entries can be revisited.

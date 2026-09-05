@@ -1,3 +1,4 @@
+import logging
 from datetime import datetime
 from typing import List, Optional
 
@@ -20,6 +21,8 @@ from services.media import (
 )
 from services.quotas import check_and_raise, check_per_call
 from services.social_publish import publish_to_connections
+
+logger = logging.getLogger("gootier.api")
 
 router = APIRouter(prefix="/api")
 
@@ -129,14 +132,31 @@ async def update_profile(
         return {"ok": True, "changed": []}
 
     db.commit()
+    user_id = user.id
     log_action(db, user, "UPDATE", "User", str(user.id),
                detail=f"Profile updated: {', '.join(changed)}")
 
-    if email_changed:
-        from routes.auth_routes import trigger_verification_email, _app_url
-        trigger_verification_email(db, user, _app_url(request))
+    result = {"ok": True, "changed": changed}
 
-    return {"ok": True, "changed": changed}
+    if email_changed:
+        # The new address is already committed above, so this send is
+        # best-effort — the same post-commit shape as signup_submit's tail, and
+        # wrapped for the same reason: `_smtp_config()` reads five keys through
+        # get_env(), each opening its own DB session, so a database blip here
+        # would 500 a profile update that has already been written. The caller
+        # is told whether the mail actually went out rather than being left to
+        # wait on one that didn't; either way they can resend from /profile.
+        from routes.auth_routes import trigger_verification_email, _app_url
+        try:
+            result["verification_email_sent"] = bool(
+                trigger_verification_email(db, user, _app_url(request))
+            )
+        except Exception:
+            db.rollback()
+            logger.exception("verification email failed after email change: user=%s", user_id)
+            result["verification_email_sent"] = False
+
+    return result
 
 
 @router.post("/profile/verify-email/resend")
