@@ -138,23 +138,56 @@ def client(test_engine):
 
 
 @pytest.fixture
-def unavailable_config_db(_isolate_session_local):
+def unavailable_config_db(test_engine, _isolate_session_local):
     """Make every `get_env()` lookup fail the way a real database blip would.
 
-    Points `database.SessionLocal` — the session `get_env()` opens for itself —
-    at an engine with no schema, so `env_configs` reads raise
-    `OperationalError`, while the *request's* injected session keeps working off
-    `test_engine`. That asymmetry is the realistic shape of the failure (a
-    connection-pool exhaustion or a blip while opening a new connection), and
-    it is exactly the condition that used to 500 signup after the account row
-    was already committed.
+    `get_env()` reads config through one of two sessions — the caller's, when
+    one is passed, or a short-lived `SessionLocal()` when not — so this closes
+    both routes:
+
+    1. `env_configs` is dropped from `test_engine`, so the read fails on the
+       request's own session.
+    2. `database.SessionLocal` is pointed at a schema-less engine, so it fails
+       for callers that pass no session.
+
+    Doing only (2) is a trap. It was enough while every `get_env()` opened its
+    own session, but once `_app_url()` and `_smtp_config()` started taking
+    `db=`, the request path stopped touching `SessionLocal` at all — and three
+    tests in this suite silently went vacuous, passing with their handler's
+    try/except deleted. Keep both halves.
+    """
+    models.EnvConfig.__table__.drop(bind=test_engine)
+
+    orphan = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    # No create_all() on purpose — that is the whole point of this engine.
+    original_bind = database.SessionLocal.kw.get("bind")
+    database.SessionLocal.configure(bind=orphan)
+    try:
+        yield
+    finally:
+        database.SessionLocal.configure(bind=original_bind)
+        orphan.dispose()
+        models.EnvConfig.__table__.create(bind=test_engine)
+
+
+@pytest.fixture
+def orphaned_session_local():
+    """Break `SessionLocal` only — leave `test_engine` healthy.
+
+    Narrower than `unavailable_config_db`, which breaks both routes into
+    `env_configs`. Use this one to prove a *supplied* session makes
+    `SessionLocal` irrelevant: exactly one of the two has to be broken for that
+    to mean anything.
     """
     engine = create_engine(
         "sqlite:///:memory:",
         connect_args={"check_same_thread": False},
         poolclass=StaticPool,
     )
-    # No create_all() on purpose — that is the whole point of the fixture.
     original_bind = database.SessionLocal.kw.get("bind")
     database.SessionLocal.configure(bind=engine)
     try:

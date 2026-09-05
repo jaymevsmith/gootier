@@ -149,7 +149,7 @@ async def update_profile(
         from routes.auth_routes import trigger_verification_email, _app_url
         try:
             result["verification_email_sent"] = bool(
-                trigger_verification_email(db, user, _app_url(request))
+                trigger_verification_email(db, user, _app_url(request, db))
             )
         except Exception:
             db.rollback()
@@ -168,7 +168,7 @@ async def resend_verification(
     if user.is_verified:
         return {"ok": True, "already_verified": True, "delivered": True}
     from routes.auth_routes import trigger_verification_email, _app_url
-    delivered = trigger_verification_email(db, user, _app_url(request))
+    delivered = trigger_verification_email(db, user, _app_url(request, db))
     log_action(db, user, "EMAIL_VERIFY_RESEND", "User", str(user.id),
                detail=f"delivered={delivered}")
     return {"ok": True, "delivered": delivered}

@@ -311,3 +311,116 @@ present.
   three entries in this log work around that rather than fixing it. If it ever
   takes a `db` parameter, the three `except Exception` wrappers added across
   these entries can be revisited.
+
+## get_env() now accepts a caller's session (2026-09-05)
+
+The root cause behind all three preceding entries, finally addressed rather than
+worked around.
+
+### The change — `services/env_config.py`
+
+```python
+def get_env(key: str, default: str = "", *, db: Optional[Session] = None) -> str:
+```
+
+- With `db`, the lookup uses that session and **leaves it open** — ownership
+  stays with the caller. Without it, behaviour is exactly as before: open a
+  short-lived `SessionLocal()`, close it.
+- **Keyword-only.** `get_env("APP_URL", session)` would otherwise bind the
+  session to `default` and silently return a `Session` object as a config value.
+  A test pins this.
+- The query runs under `db.no_autoflush`. `SessionLocal` sets `autoflush=False`,
+  but a supplied session is not guaranteed to be one of ours, and a config read
+  must never flush a caller's pending work as a side effect.
+
+### Where it is threaded — and where it is not
+
+Threaded through the paths that already hold a request session, which is every
+path these HANDOFF entries touched:
+
+| File | Change |
+|------|--------|
+| `routes/auth_routes.py` | `_app_url(request, db=None)`; signup and forgot-password pass `db`; `trigger_verification_email` forwards it to `send_email_verification` |
+| `services/email_utils.py` | `_smtp_config(db=None)`, `send_email_verification(..., db=None)`, `send_password_reset(..., db=None)` |
+| `routes/api_routes.py` | both `_app_url(request, db)` call sites |
+
+That is 5 config reads per verification email that no longer open their own
+connection, plus `APP_URL`.
+
+**Left alone deliberately** — roughly 35 further call sites in `oauth_routes`,
+`stripe_routes`, `web_routes`, `media_routes`, `services/media.py`,
+`services/ai_generator.py`, `services/onboarding.py`, `services/jts_client.py`
+and `services/secrets.py`. Most are module-level helpers (`def _meta_app_id():
+return get_env("META_APP_ID", "")`) with no session in scope; threading one in
+would mean changing their signatures and every caller for no gain.
+
+One of them is not merely unnecessary but actively wrong to change:
+**`services/secrets.py::_fernet()`** is reached from a SQLAlchemy
+`TypeDecorator`'s `process_bind_param`, i.e. *during a flush*. Handing it the
+flushing session would be re-entrant. This is the reason `db` is optional rather
+than required, and it is recorded in the `env_config` module docstring so the
+next person doesn't "finish the job" and break encryption.
+
+`set_env()` still opens its own session. It is an admin-UI write path, not on
+any request's critical path, and was out of scope here.
+
+### Trap: this change silently disarmed three existing tests
+
+`unavailable_config_db` broke `SessionLocal` only. That was a complete
+simulation while every `get_env()` opened its own session — but the moment
+`_app_url()` and `_smtp_config()` started taking `db=`, the request path stopped
+touching `SessionLocal` at all, and the fixture stopped simulating anything for
+those paths.
+
+Caught by re-running the check from the 2026-09-04 entry: delete the handler
+guards, confirm the tests fail. Three of them **passed** with their `try/except`
+deleted:
+
+- `test_signup_completes_when_the_config_database_is_unavailable`
+- `test_signup_still_reports_the_account_as_created_in_the_database`
+- `test_email_change_is_saved_when_the_config_database_is_unavailable`
+
+The fixture now closes both routes: it drops `env_configs` from `test_engine`
+(breaking the request session) **and** points `SessionLocal` at a schema-less
+engine (breaking the no-argument form), restoring the table on teardown. All six
+resilience tests were re-verified as non-vacuous afterwards — with every guard
+deleted, 6 fail.
+
+**Generalise this:** any change that alters *which session* a code path uses can
+turn a resilience fixture into a no-op without failing anything. The suite goes
+green and the coverage is gone. Re-run the delete-the-guard check after any such
+change, not just after writing the test.
+
+### Tests
+
+`tests/test_env_config.py` (new, 7): reads through a supplied session; a
+supplied session removes the dependency on `SessionLocal` (asserting the
+no-argument form still raises, so the fixture is provably in force); the session
+is left open and usable; default fallback; a cleared (`None`) stored value falls
+through to the default; no flush of the caller's pending work (uses an
+`autoflush=True` session, since `SessionLocal` would pass trivially); and `db`
+cannot be passed positionally.
+
+`tests/test_signup_resilience.py` gains `test_app_url_uses_the_session_it_is_handed`
+— proving `_app_url` actually *forwards* the session rather than merely
+accepting it, by showing the supplied-session call succeeds where the
+no-argument call falls back.
+
+`orphaned_session_local` (new conftest fixture) breaks `SessionLocal` only,
+leaving `test_engine` healthy — the narrow counterpart to
+`unavailable_config_db`. Both are needed: proving a supplied session helps
+requires exactly one of the two to be broken.
+
+Non-vacuity verified for the new guards too: removing `no_autoflush` and the
+`*` fails exactly the two tests that cover them.
+
+**70 passed**, stable over 3 consecutive runs, with and without a `gootier.db`
+present.
+
+### Still open
+
+- `set_env()` and ~35 `get_env()` call sites still use their own session, by
+  design (see above). `services/secrets.py::_fernet()` must stay that way.
+- No caching. The module docstring's note still stands: config is read on demand,
+  and a verification email is now 5 reads on one connection rather than 5
+  connections. If that ever matters, a 30s TTL cache is the documented plan.

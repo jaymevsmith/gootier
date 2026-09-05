@@ -1,6 +1,7 @@
 import logging
 import secrets
 from datetime import datetime, timedelta
+from typing import Optional
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request, Response
 from fastapi.responses import RedirectResponse
@@ -42,7 +43,7 @@ def trigger_verification_email(db: Session, user: User, base_url: str) -> bool:
     delivery failed — callers should surface that distinction to users."""
     token = create_verification_token(db, user)
     link = f"{base_url.rstrip('/')}/verify-email?token={token}"
-    return send_email_verification(user.email, link)
+    return send_email_verification(user.email, link, db=db)
 
 
 @router.get("/login")
@@ -176,7 +177,7 @@ async def signup_submit(
     # must not 500 a signup that has otherwise succeeded. The user can always
     # request a fresh verification link from their profile.
     try:
-        trigger_verification_email(db, user, _app_url(request))
+        trigger_verification_email(db, user, _app_url(request, db))
     except Exception:
         db.rollback()
         logger.exception("verification email failed at signup: user=%s", user_id)
@@ -275,18 +276,20 @@ async def verify_email_submit(
 # Password reset
 # --------------------------------------------------------------------------- #
 
-def _app_url(request: Request) -> str:
+def _app_url(request: Request, db: Optional[Session] = None) -> str:
     """The app's public base URL: the configured APP_URL, else this request's
     own scheme + host.
 
-    `get_env()` opens its own DB session, so a database blip raises here — in a
-    caller like signup_submit that runs *after* the account is committed, that
-    turned a completed signup into a 500. The request-derived URL below is a
-    correct answer on its own (it is the documented fallback for an unset
-    APP_URL), so a failed lookup degrades to it instead of propagating.
+    Pass the request's session so the lookup rides the connection already
+    checked out. Without it `get_env()` opens its own, and a blip there raises
+    inside callers like signup_submit that run *after* the account is committed
+    — which used to turn a completed signup into a 500. The try/except stays
+    either way: the request-derived URL below is a correct answer on its own
+    (it is the documented fallback for an unset APP_URL), so a failed lookup
+    degrades to it instead of propagating.
     """
     try:
-        env_url = get_env("APP_URL", "").rstrip("/")
+        env_url = get_env("APP_URL", "", db=db).rstrip("/")
     except Exception:
         logger.exception("APP_URL lookup failed — falling back to the request URL")
         env_url = ""
@@ -317,8 +320,8 @@ async def forgot_password_submit(
         user.reset_token_expires_at = datetime.utcnow() + timedelta(minutes=RESET_TOKEN_TTL_MINUTES)
         db.commit()
 
-        link = f"{_app_url(request)}/reset-password?token={token}"
-        send_password_reset(user.email, link)
+        link = f"{_app_url(request, db)}/reset-password?token={token}"
+        send_password_reset(user.email, link, db=db)
         log_action(db, user, "PASSWORD_RESET_REQUEST", "User", str(user.id))
 
     return templates.TemplateResponse(request, "forgot_password.html",

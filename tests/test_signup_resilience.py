@@ -54,7 +54,21 @@ def test_app_url_still_prefers_a_configured_value(db):
     db.add(EnvConfig(key="APP_URL", value="https://app.gootier.com/", group_name="app"))
     db.commit()
 
-    assert auth_routes._app_url(_request()) == "https://app.gootier.com"
+    assert auth_routes._app_url(_request(), db) == "https://app.gootier.com"
+
+
+def test_app_url_uses_the_session_it_is_handed(db, orphaned_session_local):
+    """`_app_url(request, db)` must actually forward the session to get_env,
+    not just accept it. With `SessionLocal` pointed at a schema-less engine, a
+    forwarded session is the only way this lookup can succeed — and without one
+    the same call falls back to the request URL instead."""
+    from models import EnvConfig
+
+    db.add(EnvConfig(key="APP_URL", value="https://app.gootier.com", group_name="app"))
+    db.commit()
+
+    assert auth_routes._app_url(_request(), db) == "https://app.gootier.com"
+    assert auth_routes._app_url(_request()) == "https://gootier.test"
 
 
 def test_signup_completes_when_the_config_database_is_unavailable(
