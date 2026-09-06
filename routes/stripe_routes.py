@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from auth import get_current_user
 from database import get_db
+from display import install_filters
 from models import TierConfig, User, log_action
 from services.affiliates import affiliates
 from services.env_config import get_env
@@ -17,7 +18,7 @@ from services.env_config import get_env
 logger = logging.getLogger("gootier.stripe")
 
 router = APIRouter()
-templates = Jinja2Templates(directory="templates")
+templates = install_filters(Jinja2Templates(directory="templates"))
 
 
 def _stripe_secret() -> str: return get_env("STRIPE_SECRET_KEY", "")
@@ -62,11 +63,15 @@ async def billing_page(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    from services.token_wallet import balance_tokens
+    from services.token_wallet import balance_tokens_or_none
     from services.env_config import get_env
+    # This page is the one a customer reaches FOR the balance, and the one they
+    # are sent to when they run out -- a 500 here on a Token Service blip is the
+    # worst possible place for one.
+    raw_balance = balance_tokens_or_none(db, user)
     return templates.TemplateResponse(request, "billing.html", {
         "user": user,
-        "token_balance_display": balance_tokens(db, user) // 1000,
+        "token_balance_display": None if raw_balance is None else raw_balance // 1000,
         "token_service_url": get_env("TOKEN_SERVICE_URL", "https://jhome-token-service-production.up.railway.app"),
         "token_service_app_slug": "gootier",
     })

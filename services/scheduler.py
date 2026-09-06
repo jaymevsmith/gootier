@@ -7,6 +7,7 @@ from typing import List
 from database import SessionLocal
 from models import EmailBlast, MediaJob, SocialConnection, SocialPost
 from services.email_utils import send_blast_email
+from services.handoff import reap_expired_tokens
 from services.social_publish import publish_to_connections
 
 logger = logging.getLogger("gootier.scheduler")
@@ -175,11 +176,24 @@ def _process_onboarding_drip() -> None:
         db.close()
 
 
+def _cleanup_expired_handoff_tokens() -> None:
+    """Reap used/expired handoff_tokens rows past their retention window —
+    otherwise the table grows monotonically with every Backoffice handoff."""
+    db = SessionLocal()
+    try:
+        deleted = reap_expired_tokens(db)
+        if deleted:
+            logger.info("Reaped %d expired handoff token(s)", deleted)
+    finally:
+        db.close()
+
+
 async def scheduler_loop() -> None:
     logger.info("Gootier scheduler loop starting")
     tick = 0
     ANALYTICS_EVERY_TICKS = 10        # 10 min when INTERVAL_SECONDS=60
     ONBOARDING_EVERY_TICKS = 60 * 12  # 12 hours (the daily-ish cadence is fine — preconditions are idempotent)
+    HANDOFF_REAP_EVERY_TICKS = 60 * 12  # 12 hours — retention window is 1 day, no need to run often
     while True:
         tick += 1
         try:
@@ -189,6 +203,8 @@ async def scheduler_loop() -> None:
                 await _refresh_recent_analytics()
             if tick % ONBOARDING_EVERY_TICKS == 0:
                 _process_onboarding_drip()
+            if tick % HANDOFF_REAP_EVERY_TICKS == 0:
+                _cleanup_expired_handoff_tokens()
         except Exception as e:
             logger.exception("Scheduler tick failed: %s", e)
         await asyncio.sleep(INTERVAL_SECONDS)

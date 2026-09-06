@@ -9,11 +9,12 @@ from sqlalchemy.orm import Session
 
 from auth import get_current_user_optional
 from database import get_db
+from display import install_filters
 from models import EmailBlast, MediaJob, SocialConnection, SocialPost, User
 from services.quotas import usage_summary
 
 router = APIRouter()
-templates = Jinja2Templates(directory="templates")
+templates = install_filters(Jinja2Templates(directory="templates"))
 
 # Bump this string whenever the privacy or terms copy materially changes — it
 # renders on both pages and signals to users that the policy was revised.
@@ -125,8 +126,9 @@ async def dashboard(
         MediaJob.status == "done",
         MediaJob.result_url != None,  # noqa: E711
     ).order_by(MediaJob.completed_at.desc().nullslast()).limit(8).all()
-    from services.token_wallet import balance_tokens
-    credit_balance = balance_tokens(db, user) // 1000
+    from services.token_wallet import balance_tokens_or_none
+    raw_balance = balance_tokens_or_none(db, user)
+    credit_balance = None if raw_balance is None else raw_balance // 1000
     return templates.TemplateResponse(request, "dashboard.html", _ctx(
         user,
         connections=connections,
@@ -241,7 +243,7 @@ async def studio_page(
         return RedirectResponse(url="/login", status_code=303)
     from models import MediaJob
     from services.media import tts_catalog
-    from services.token_wallet import balance_tokens
+    from services.token_wallet import balance_tokens_or_none
     clips = db.query(MediaJob).filter(
         MediaJob.user_id == user.id,
         MediaJob.kind == "video",
@@ -251,8 +253,10 @@ async def studio_page(
     cat = tts_catalog()
     default_model_key = next((k for k, v in cat.items() if v.get("default")), None) or next(iter(cat))
     tts_voices = [v[0] for v in cat[default_model_key]["voices"]] if default_model_key else []
+    raw_balance = balance_tokens_or_none(db, user)
     return templates.TemplateResponse(request, "studio.html", _ctx(
-        user, clips=clips, credit_balance=balance_tokens(db, user) // 1000,
+        user, clips=clips,
+        credit_balance=None if raw_balance is None else raw_balance // 1000,
         tts_voices=tts_voices,
     ))
 

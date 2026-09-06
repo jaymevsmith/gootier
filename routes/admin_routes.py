@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from auth import get_current_user, get_current_user_optional
 from database import get_db
+from display import install_filters
 from models import (
     ActionLog, EmailBlast, EnvConfig, SocialConnection, SocialPost,
     TierConfig, User, log_action,
@@ -17,7 +18,7 @@ from models import (
 from services.env_config import list_for_admin, set_env
 
 router = APIRouter()
-templates = Jinja2Templates(directory="templates")
+templates = install_filters(Jinja2Templates(directory="templates"))
 
 VALID_ROLES = ["admin", "tech", "strategist", "marketing", "client"]
 VALID_TIERS = ["trial", "bronze", "silver", "gold"]

@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 import bcrypt
-from fastapi import Cookie, Depends, HTTPException, Request, status
+from fastapi import Cookie, Depends, HTTPException, Request, Response, status
 from jose import JWTError, jwt
 from sqlalchemy.orm import Session
 
@@ -68,6 +68,21 @@ def create_access_token(user_id: int) -> str:
     expire = datetime.utcnow() + timedelta(minutes=TOKEN_TTL_MINUTES)
     payload = {"sub": str(user_id), "exp": expire}
     return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
+
+
+def set_session_cookie(response: Response, token: str) -> None:
+    """Mint the session cookie. Single call site so every login path
+    (password, signup, email-verify auto-login, /sso/consume, Google OAuth)
+    stays in sync on flags — in particular `secure`, which must be True in
+    prod so the cookie is never sent over plain HTTP."""
+    response.set_cookie(
+        key=COOKIE_NAME,
+        value=token,
+        httponly=True,
+        samesite="lax",
+        secure=os.getenv("ENV", "").lower() in {"prod", "production"},
+        max_age=TOKEN_TTL_MINUTES * 60,
+    )
 
 
 def _decode_user_id(token: str) -> Optional[int]:

@@ -33,15 +33,81 @@ def ensure_wallet(db: Session, user: User) -> int:
     wasteful. Not fixed here, matching this migration's other known tradeoffs."""
     if user.jts_wallet_id is not None:
         return user.jts_wallet_id
-    wallet_id = _client().ensure_wallet(external_user_id=str(user.id), email=user.email)
+    wallet_id = _client().ensure_wallet(
+        external_user_id=str(user.id), email=user.email,
+        customer_ref=user.jhome_sub,
+    )
     user.jts_wallet_id = wallet_id
     db.commit()
+    return wallet_id
+
+
+def link_wallet_to_customer(db: Session, user: User) -> int:
+    """Apply (or re-apply) customer_ref grouping for this user's JTS wallet.
+
+    Unlike ensure_wallet, this ALWAYS calls the Token Service -- even when
+    user.jts_wallet_id is already cached. The Token Service's POST /wallets is
+    an idempotent get-or-create, so calling it again for an existing wallet is
+    safe, and it is exactly what's needed to apply customer_ref grouping to a
+    user whose wallet was created BEFORE they ever linked their Jhome identity
+    (the common case: an existing Gootier customer connecting their account via
+    the Backoffice handoff -- their wallet was minted at signup, so
+    ensure_wallet's cache short-circuit would return immediately and the
+    grouping call would never happen).
+
+    ensure_wallet's cache short-circuit is correct for its OWN callers (balance
+    checks, debits -- repeated calls there would be wasteful and grouping is
+    not their concern), but wrong for this one. Same reasoning as RingBack's
+    internal_api handoff: gating grouping on the first-sight jhome_sub
+    transition makes it one-shot, so a single timeout leaves the user linked
+    but ungrouped forever with nothing that could ever retry."""
+    wallet_id = _client().ensure_wallet(
+        external_user_id=str(user.id), email=user.email,
+        customer_ref=user.jhome_sub,
+    )
+    if user.jts_wallet_id is None:
+        user.jts_wallet_id = wallet_id
+        db.commit()
     return wallet_id
 
 
 def balance_tokens(db: Session, user: User) -> int:
     wallet_id = ensure_wallet(db, user)
     return _client().get_balance(wallet_id)
+
+
+def balance_tokens_or_none(db: Session, user: User) -> Optional[int]:
+    """The balance for DISPLAY, or None when the Token Service could not answer.
+
+    Page renders must not die because the Token Service is unavailable. On
+    2026-09-03 a ~30-minute JTS outage (empty-body 404s between a broken deploy
+    and the "Restore token service" redeploy) turned every unguarded
+    `balance_tokens(...)` call site into a 500 -- including /dashboard, which is
+    where the Backoffice handoff lands, so a customer was signed in correctly
+    and then shown an Internal Server Error, and /billing, which is the page
+    they would have gone to in order to do something about it.
+
+    An unreachable Token Service means the balance is UNKNOWN, not zero. None
+    is the "unknown" value and renders as an em-dash; returning 0 instead would
+    read as "you are out of tokens", which is a different and false statement.
+    Same fail-open reasoning as debit_after_success, and the same catch-all for
+    non-JTSError transport failures (httpx connect/read errors are not JTSError
+    subclasses, and a host that stops answering entirely raises those).
+
+    Deliberately NOT used by check_sufficient. Failing open on a label is not
+    the same decision as failing open on an authorization: a balance we cannot
+    read is not a balance we may authorize a charge against, so the spend gate
+    keeps raising.
+    """
+    try:
+        return balance_tokens(db, user)
+    except JTSError:
+        log.warning("token balance unavailable for display: user=%s", user.id, exc_info=True)
+        return None
+    except Exception:
+        log.warning("token balance unavailable for display (non-JTS error): user=%s",
+                    user.id, exc_info=True)
+        return None
 
 
 def check_sufficient(db: Session, user: User, estimated_tokens: int) -> None:

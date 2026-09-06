@@ -38,11 +38,15 @@ class JTSClient:
     def _headers(self) -> dict:
         return {"X-API-Key": self.api_key}
 
-    def ensure_wallet(self, external_user_id: str, email: str = "") -> int:
+    def ensure_wallet(self, external_user_id: str, email: str = "",
+                       customer_ref: Optional[str] = None) -> int:
+        payload = {"external_user_id": external_user_id, "email": email}
+        if customer_ref:
+            payload["customer_ref"] = customer_ref
         resp = self._client.post(
             f"{self.base_url}/wallets",
             headers=self._headers(),
-            json={"external_user_id": external_user_id, "email": email},
+            json=payload,
         )
         if resp.status_code != 200:
             raise JTSError(f"ensure_wallet failed: {resp.status_code} {resp.text}")

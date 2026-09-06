@@ -9,21 +9,23 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
 from auth import (
-    COOKIE_NAME, TOKEN_TTL_MINUTES, create_access_token, hash_password,
+    COOKIE_NAME, create_access_token, hash_password, set_session_cookie,
     validate_email, validate_password, validate_username, verify_password,
 )
 from database import get_db
-from models import User, log_action
+from display import install_filters
+from models import HandoffToken, User, log_action
 from services.affiliates import affiliates
 from services.csrf import get_or_create_token, verify_csrf
 from services.email_utils import send_email_verification, send_password_reset
 from services.env_config import get_env
 from services.flash import set_flash
+from services.handoff import hash_token
 
 logger = logging.getLogger("gootier.auth")
 
 router = APIRouter()
-templates = Jinja2Templates(directory="templates")
+templates = install_filters(Jinja2Templates(directory="templates"))
 RESET_TOKEN_TTL_MINUTES = 60
 VERIFY_TOKEN_TTL_HOURS = 24
 
@@ -82,11 +84,47 @@ async def login_submit(
 
     token = create_access_token(user.id)
     response = RedirectResponse(url="/dashboard", status_code=303)
-    response.set_cookie(
-        key=COOKIE_NAME, value=token, httponly=True, samesite="lax", max_age=TOKEN_TTL_MINUTES * 60,
-    )
+    set_session_cookie(response, token)
     set_flash(response, "success", f"Welcome back, {user.nickname or user.username}!")
     log_action(db, user, "LOGIN", "User", str(user.id), detail="Login success")
+    return response
+
+
+# Deliberately a bare GET, unlike /verify-email's CSRF-protected-POST
+# interstitial: this URL is a server-side redirect target from the
+# Backoffice, never an emailed link a scanner/prefetcher could hit, so
+# that pattern's justification doesn't apply here.
+@router.get("/sso/consume")
+def sso_consume(token: str = "", db: Session = Depends(get_db)):
+    if not token:
+        return RedirectResponse(url="/login?error=sso", status_code=303)
+
+    h = hash_token(token)
+    row = db.query(HandoffToken).filter(HandoffToken.token_hash == h).one_or_none()
+    now = datetime.utcnow()
+    if row is None or row.used_at is not None or row.expires_at <= now:
+        return RedirectResponse(url="/login?error=sso", status_code=303)
+
+    user = db.query(User).filter(User.id == row.user_id).one_or_none()
+    if user is None or not user.is_active or user.has_role("admin"):
+        return RedirectResponse(url="/login?error=sso", status_code=303)
+
+    # Burn BEFORE issuing the cookie, and make the burn itself the
+    # concurrency guard: two racing consumes of one token cannot both
+    # succeed.
+    burned = db.query(HandoffToken).filter(
+        HandoffToken.id == row.id, HandoffToken.used_at.is_(None),
+    ).update({"used_at": now})
+    db.commit()
+    if burned != 1:
+        return RedirectResponse(url="/login?error=sso", status_code=303)
+
+    session_token = create_access_token(user.id)
+    response = RedirectResponse(url="/dashboard", status_code=303)
+    response.headers["Cache-Control"] = "no-store"
+    set_session_cookie(response, session_token)
+    set_flash(response, "success", f"Welcome, {user.nickname or user.username}!")
+    log_action(db, user, "BACKOFFICE_HANDOFF_CONSUME", "User", str(user.id))
     return response
 
 
@@ -189,9 +227,7 @@ async def signup_submit(
 
     token = create_access_token(user_id)
     response = RedirectResponse(url="/dashboard", status_code=303)
-    response.set_cookie(
-        key=COOKIE_NAME, value=token, httponly=True, samesite="lax", max_age=TOKEN_TTL_MINUTES * 60,
-    )
+    set_session_cookie(response, token)
     set_flash(response, "success", "Welcome to Gootier! Check your email to verify your address.")
     return response
 
@@ -266,9 +302,7 @@ async def verify_email_submit(
         {"error": None, "token": "", "done": True, "email": user.email,
          "csrf_token": get_or_create_token(request)},
     )
-    response.set_cookie(
-        key=COOKIE_NAME, value=access, httponly=True, samesite="lax", max_age=TOKEN_TTL_MINUTES * 60,
-    )
+    set_session_cookie(response, access)
     return response
 
 
