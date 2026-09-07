@@ -1103,3 +1103,79 @@ release's probes still pass rather than looking for something new.
   the next person to the wrong dashboard. Not fixed here.
 - The `set_env()` and `services/secrets.py` notes from the 2026-09-05 entry
   still stand.
+
+## Corrected the documented deploy target (2026-09-07)
+
+Closes the "Still open" item from the 2026-09-06 entry. **That entry's claim that
+`README.md` was wrong only at line 28 was itself understated** — the whole
+`## Deployment` section was an AWS runbook (ECR, ECS cluster, ALB target group on
+`:8000`, Secrets Manager groups named `gootier/*`). None of it applies.
+
+### `README.md`
+
+- Stack table: deploy target is now Railway, not "AWS ECS Fargate (Docker),
+  Secrets Manager for env, RDS Postgres".
+- `## Deployment` rewritten around what actually happens: merging to `main` *is*
+  the deploy (the service is git-linked), `railway.toml` pins the Dockerfile and
+  the 300s health-check window, and the shell-form `CMD` expands `${PORT}` — so
+  the production listening port is **not** 8000 and must not be hardcoded.
+- Carries forward the two traps this log already learned: never `railway up` from
+  the primary checkout (it is routinely behind `main`, so a hand deploy is a
+  silent rollback), and a docs-only merge redeploys too, so a changed deployment
+  ID does not imply changed code.
+- One-time setup checklist rewritten for the Railway Postgres plugin and
+  `/admin/env`, with the admin bootstrap as
+  `railway ssh --service gootier -- python create_admin.py <u> <e> <p>`.
+- Added a short "Verifying a deploy" note pointing at the probe pattern here.
+
+Verified with a word-boundary grep that no `aws|ecs|fargate|ecr|alb|rds` mentions
+remain. A naive `grep -i` still "finds" some — they are substrings of `SECRET_KEY`
+(`ecr`) and `passwords` (`rds`). Worth knowing before chasing them.
+
+### `Dockerfile`
+
+Line 5 justified the `linux/amd64` pin as matching "the ECS Fargate target". The
+pin is still correct — Railway builds and runs x86_64, and Apple Silicon would
+otherwise produce an arm64 image — but the stated reason was wrong. Comment only;
+no build change.
+
+### `gootier-app/CLAUDE.md`
+
+This one was worse than stale: all 120 lines were the **`claude-trading`
+project's** context file, sitting in Gootier's directory and loaded as
+authoritative project instructions every session. It declared
+`Repository: jaymevsmith/claude-trading`, `Deploy platform: AWS ECS Fargate
+(migrated from Railway)` — precisely backwards for this app — and pointed at
+`claude-alpaca.md`, `aws/task-definition.json` and `trading/*` secrets groups,
+none of which exist here.
+
+Patching only its deploy line would have left a file still claiming the wrong
+repo, so it was replaced with an accurate Gootier context: repo and branch model,
+the Railway facts with project/service IDs, the `get_env` precedence and the
+`db=` convention, the test command with the `PYTHONPATH=.` requirement and the two
+autouse conftest safety nets, and a pointer table to README/HANDOFF/STATUS/docs.
+
+**Two things to know about that file:**
+
+- It lives at `gootier-app/CLAUDE.md`, **one level above the git root**
+  (`gootier-app/Gootier/`), and is **not tracked by any repo** — `gootier-app/` is
+  not a git repo at all. Editing it changes only this machine; it will not arrive
+  with a fresh clone, and it is not in this PR.
+- On this case-insensitive filesystem `CLAUDE.md` and `claude.md` are the **same
+  inode**. `ls` shows `claude.md`. Do not "create" the other one — you will just
+  overwrite the same file.
+
+The original was preserved as `gootier-app/.claude-md.trading-backup.md` in case
+the trading project still wants it.
+
+### Still open
+
+- `gootier-app/` also holds `ONBOARDING.md`, `ONBOARDING_ARCHITECTURE.md`,
+  `ONBOARDING_SUMMARY.md` and `claude-account-management.md` — all referenced by
+  the trading context file that was just replaced, so they are probably that
+  project's too. Untracked and unexamined; not touched here.
+- `README.md`'s "Known follow-ups" list also looks stale — it lists CSRF tokens,
+  encrypting OAuth tokens at rest, and LinkedIn/TikTok OAuth as deferred, but
+  `services/csrf.py`, `services/secrets.py`'s `TypeDecorator` and
+  `routes/oauth_routes.py` all exist. Not corrected here: that is a separate
+  claim needing its own verification, not a deploy-target fix.
