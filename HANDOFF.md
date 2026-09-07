@@ -1084,6 +1084,15 @@ separate decision with cleanup attached.
   as not-done — and make the loop emit on `Failed|Crashed` too, or a crashloop
   is indistinguishable from still-building.
 
+### A docs-only merge still redeploys
+
+Merging this very entry triggers another Railway build, because the GitHub
+integration watches `main` and does not care that the diff is Markdown. So a
+changed deployment ID does **not** imply changed code. When reading this log
+later, match a deployment against the commit it shipped, not against the fact
+that the ID moved — and when verifying a docs deploy, confirm the *previous*
+release's probes still pass rather than looking for something new.
+
 ### Still open
 
 - **`README.md` line 28 says the deploy target is "AWS ECS Fargate (Docker),
