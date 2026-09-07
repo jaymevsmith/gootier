@@ -964,3 +964,46 @@ present.
 - No caching. The module docstring's note still stands: config is read on demand,
   and a verification email is now 5 reads on one connection rather than 5
   connections. If that ever matters, a 30s TTL cache is the documented plan.
+
+## Merged up to origin/main and opened PR #12 (2026-09-06)
+
+Branch `claude/serene-bhaskara-94d80c` (the four entries above) integrated with
+`origin/main` and pushed. **PR: https://github.com/jaymevsmith/gootier/pull/12**,
+open against `main`, not yet merged.
+
+`git merge origin/main` brought in 35 commits — the Backoffice SSO handoff,
+`internal_routes.py`, `display.py`, `jhome_sub` / `customer_ref` wallet
+grouping, `balance_tokens_or_none`, and the compact K/M token display. One
+conflict, `HANDOFF.md` (add/add — both sides created the file independently).
+Resolved by keeping origin/main's copy as the base and **appending** the four
+new sections, per this file's own append-only convention. `STATUS.md` and
+`routes/auth_routes.py` auto-merged; the `_app_url` / `db=` changes came through
+intact (verified by grep, not assumed).
+
+**177 passed** on the merged result, stable over 3 runs, with and without a
+`gootier.db` present. All of `main`'s own tests pass under the new autouse
+conftest fixtures (`_isolate_session_local`, `_no_real_network`) — worth noting,
+since those apply suite-wide and were written before that upstream work existed.
+
+### Traps for whoever picks this up
+
+- **Local `main` is 35 commits behind `origin/main`** (it sits at `a5d33bf`,
+  pre-PWA-merge). Merging anything into local `main` without fast-forwarding it
+  first produces a divergent main missing the SSO handoff, the balance-outage
+  fix and the compact token display. Always `git fetch` and compare against
+  `origin/main`, not `main`.
+- **The primary checkout has uncommitted work** — `routes/stripe_routes.py`,
+  `services/token_wallet.py`, seven auth/billing templates, plus untracked
+  `static/css/auth-kit.css`, `static/js/auth-kit.js`, `static/js/token-guard.js`
+  and a `.worktrees/` directory. An in-flight "authkit" change, unrelated to
+  this branch. `main` cannot fast-forward past it, because the upstream commits
+  touch those same templates. Deal with that work before advancing `main`
+  locally; nothing here touched it.
+- The worktree at `.claude/worktrees/serene-bhaskara-94d80c` is deliberately
+  **kept** — PR feedback needs somewhere to land.
+
+### Still open
+
+- PR #12 is unreviewed and unmerged. Nothing is deployed from this branch.
+- The `set_env()` and `services/secrets.py` notes from the 2026-09-05 entry
+  still stand.
