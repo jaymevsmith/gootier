@@ -1,6 +1,7 @@
 import logging
 import secrets
 from datetime import datetime, timedelta
+from typing import Optional
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request, Response
 from fastapi.responses import RedirectResponse
@@ -44,7 +45,7 @@ def trigger_verification_email(db: Session, user: User, base_url: str) -> bool:
     delivery failed — callers should surface that distinction to users."""
     token = create_verification_token(db, user)
     link = f"{base_url.rstrip('/')}/verify-email?token={token}"
-    return send_email_verification(user.email, link)
+    return send_email_verification(user.email, link, db=db)
 
 
 @router.get("/login")
@@ -178,6 +179,10 @@ async def signup_submit(
     db.add(user)
     db.commit()
     db.refresh(user)
+    # Held separately: the best-effort steps below may roll the session back,
+    # which expires `user` and makes every later attribute read a fresh SELECT.
+    # Issuing the session token must not depend on the database still answering.
+    user_id = user.id
     log_action(db, user, "SIGNUP", "User", str(user.id))
 
     # Eagerly create the JTS wallet (and grant the trial balance) at signup
@@ -204,14 +209,23 @@ async def signup_submit(
             logger.warning("affiliates report_signup failed for user %s: %s", user.id, e)
 
     # Fire verification email + welcome email (logs the link if SMTP isn't configured).
-    trigger_verification_email(db, user, _app_url(request))
+    # Wrapped for the same reason as ensure_wallet above: the account is already
+    # committed, so a failure here (SMTP config reads go through get_env() and
+    # its own DB session; create_verification_token does its own db.commit())
+    # must not 500 a signup that has otherwise succeeded. The user can always
+    # request a fresh verification link from their profile.
+    try:
+        trigger_verification_email(db, user, _app_url(request, db))
+    except Exception:
+        db.rollback()
+        logger.exception("verification email failed at signup: user=%s", user_id)
     try:
         from services.onboarding import send_welcome_email
         send_welcome_email(user)
     except Exception:
         pass  # welcome email is best-effort — never block signup on it
 
-    token = create_access_token(user.id)
+    token = create_access_token(user_id)
     response = RedirectResponse(url="/dashboard", status_code=303)
     set_session_cookie(response, token)
     set_flash(response, "success", "Welcome to Gootier! Check your email to verify your address.")
@@ -296,8 +310,23 @@ async def verify_email_submit(
 # Password reset
 # --------------------------------------------------------------------------- #
 
-def _app_url(request: Request) -> str:
-    env_url = get_env("APP_URL", "").rstrip("/")
+def _app_url(request: Request, db: Optional[Session] = None) -> str:
+    """The app's public base URL: the configured APP_URL, else this request's
+    own scheme + host.
+
+    Pass the request's session so the lookup rides the connection already
+    checked out. Without it `get_env()` opens its own, and a blip there raises
+    inside callers like signup_submit that run *after* the account is committed
+    — which used to turn a completed signup into a 500. The try/except stays
+    either way: the request-derived URL below is a correct answer on its own
+    (it is the documented fallback for an unset APP_URL), so a failed lookup
+    degrades to it instead of propagating.
+    """
+    try:
+        env_url = get_env("APP_URL", "", db=db).rstrip("/")
+    except Exception:
+        logger.exception("APP_URL lookup failed — falling back to the request URL")
+        env_url = ""
     if env_url:
         return env_url
     return f"{request.url.scheme}://{request.url.netloc}".rstrip("/")
@@ -325,8 +354,8 @@ async def forgot_password_submit(
         user.reset_token_expires_at = datetime.utcnow() + timedelta(minutes=RESET_TOKEN_TTL_MINUTES)
         db.commit()
 
-        link = f"{_app_url(request)}/reset-password?token={token}"
-        send_password_reset(user.email, link)
+        link = f"{_app_url(request, db)}/reset-password?token={token}"
+        send_password_reset(user.email, link, db=db)
         log_action(db, user, "PASSWORD_RESET_REQUEST", "User", str(user.id))
 
     return templates.TemplateResponse(request, "forgot_password.html",

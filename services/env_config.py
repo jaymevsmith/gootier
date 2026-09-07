@@ -6,6 +6,14 @@ API keys without redeploying. Mirrors the Trading Jay pattern from ECOSYSTEM.md.
 Module imports must call `get_env("KEY")` instead of `os.getenv("KEY")` for
 any value an admin might want to manage from `/admin/env`.
 
+Pass `db=` whenever you already hold a request session. Without it `get_env()`
+opens a second connection of its own, which is invisible to
+`app.dependency_overrides[get_db]` in tests and is one more thing that can fail
+mid-request. It stays optional because several callers legitimately have no
+session to give — module-level config helpers, and `services/secrets.py`, whose
+`_fernet()` runs inside a SQLAlchemy TypeDecorator during flush, where reusing
+the flushing session would be re-entrant.
+
 Caching is intentionally NOT done here — call sites read on demand. At our
 current scale that's fine; if it ever isn't, wrap with a 30s TTL cache.
 """
@@ -13,19 +21,39 @@ import os
 from datetime import datetime
 from typing import Optional
 
+from sqlalchemy.orm import Session
+
 from database import SessionLocal
 from models import EnvConfig, User, log_action
 
 
-def get_env(key: str, default: str = "") -> str:
-    """Return DB-stored value if set & non-empty, otherwise `os.environ`, otherwise default."""
-    db = SessionLocal()
+def get_env(key: str, default: str = "", *, db: Optional[Session] = None) -> str:
+    """Return DB-stored value if set & non-empty, otherwise `os.environ`, otherwise default.
+
+    `db` is the caller's session, used as-is and left open — ownership stays
+    with whoever passed it. Omit it and a short-lived session is opened and
+    closed here, as before.
+
+    Keyword-only so a session can never land in `default` by position.
+    """
+    if db is not None:
+        return _lookup(db, key, default)
+
+    own = SessionLocal()
     try:
-        cfg = db.query(EnvConfig).filter(EnvConfig.key == key).first()
-        if cfg and cfg.value:
-            return cfg.value
+        return _lookup(own, key, default)
     finally:
-        db.close()
+        own.close()
+
+
+def _lookup(db: Session, key: str, default: str) -> str:
+    # no_autoflush: reading config must never flush a caller's pending work as
+    # a side effect. SessionLocal already sets autoflush=False, but a supplied
+    # session is not guaranteed to be one of ours.
+    with db.no_autoflush:
+        cfg = db.query(EnvConfig).filter(EnvConfig.key == key).first()
+    if cfg and cfg.value:
+        return cfg.value
     return os.getenv(key, default)
 
 

@@ -1,25 +1,30 @@
 import logging
 import smtplib
 from email.message import EmailMessage
-from typing import List, Tuple
+from typing import List, Optional, Tuple
+
+from sqlalchemy.orm import Session
 
 from services.env_config import get_env
 
 logger = logging.getLogger("gootier.email")
 
 
-def _smtp_config() -> dict:
+def _smtp_config(db: Optional[Session] = None) -> dict:
+    """Five config reads. Passing the caller's session keeps them on the
+    connection the request already holds instead of opening five more."""
     return {
-        "host": get_env("SMTP_HOST", ""),
-        "port": int(get_env("SMTP_PORT", "587") or "587"),
-        "username": get_env("SMTP_USERNAME", ""),
-        "password": get_env("SMTP_PASSWORD", ""),
-        "from_email": get_env("FROM_EMAIL", "no-reply@gootier.local"),
+        "host": get_env("SMTP_HOST", "", db=db),
+        "port": int(get_env("SMTP_PORT", "587", db=db) or "587"),
+        "username": get_env("SMTP_USERNAME", "", db=db),
+        "password": get_env("SMTP_PASSWORD", "", db=db),
+        "from_email": get_env("FROM_EMAIL", "no-reply@gootier.local", db=db),
     }
 
 
-def send_email_verification(to_email: str, verify_link: str) -> bool:
-    cfg = _smtp_config()
+def send_email_verification(to_email: str, verify_link: str,
+                            db: Optional[Session] = None) -> bool:
+    cfg = _smtp_config(db)
     if not cfg["host"] or cfg["host"] in {"smtp.example.com", "localhost"}:
         logger.warning("SMTP not configured — verification link for %s: %s", to_email, verify_link)
         return False
@@ -64,8 +69,9 @@ def send_email_verification(to_email: str, verify_link: str) -> bool:
         return False
 
 
-def send_password_reset(to_email: str, reset_link: str) -> bool:
-    cfg = _smtp_config()
+def send_password_reset(to_email: str, reset_link: str,
+                        db: Optional[Session] = None) -> bool:
+    cfg = _smtp_config(db)
     # Sentinel hosts from .env.example aren't real SMTP — treat as not configured.
     if not cfg["host"] or cfg["host"] in {"smtp.example.com", "localhost"}:
         logger.warning("SMTP not configured — password reset link for %s: %s", to_email, reset_link)

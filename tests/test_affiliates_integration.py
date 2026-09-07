@@ -5,24 +5,16 @@ plain pytest functions using the shared `db` fixture from tests/conftest.py
 (isolated in-memory SQLite). For the signup flow specifically we also spin up
 a minimal FastAPI app around just routes/auth_routes.router (rather than the
 full main.py app, which starts a background scheduler task on lifespan) and
-drive it with FastAPI's TestClient. The AffiliatesClient's network methods are
-patched with unittest.mock so no real HTTP call is made.
+drive it with FastAPI's TestClient — that app is conftest's `client` fixture.
+The AffiliatesClient's network methods are patched with unittest.mock so no
+real HTTP call is made.
 """
 from unittest.mock import patch
 
-import pytest
-from fastapi import FastAPI
-from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
-
 from auth import COOKIE_NAME
-from database import Base, get_db
 import models  # noqa: F401 — ensures all models register on Base.metadata
 from models import User
 from routes import auth_routes, stripe_routes
-from services.csrf import CSRFCookieMiddleware
 
 
 def test_user_model_has_referral_code_column(db):
@@ -45,37 +37,6 @@ def test_user_model_has_referral_code_column(db):
     assert user.referral_code == "JAYS10"
 
 
-@pytest.fixture
-def client():
-    """A minimal app wired with just auth_routes, its own isolated in-memory
-    DB, and the CSRF cookie middleware (auth_routes' signup/login POSTs
-    require Depends(verify_csrf))."""
-    engine = create_engine(
-        "sqlite:///:memory:",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
-    Base.metadata.create_all(bind=engine)
-    TestingSession = sessionmaker(bind=engine)
-
-    def override_get_db():
-        session = TestingSession()
-        try:
-            yield session
-        finally:
-            session.close()
-
-    app = FastAPI()
-    app.add_middleware(CSRFCookieMiddleware)
-    app.include_router(auth_routes.router)
-    app.dependency_overrides[get_db] = override_get_db
-
-    with TestClient(app) as c:
-        yield c
-
-    engine.dispose()
-
-
 def _signup_form(client, ref=None, username="newuser", email="newuser@example.com"):
     """GET /signup to obtain a CSRF cookie+token, then POST the signup form
     (mirroring the hidden csrf_token / ref fields templates/signup.html
@@ -95,8 +56,13 @@ def _signup_form(client, ref=None, username="newuser", email="newuser@example.co
     return client.post("/signup", data=form, follow_redirects=False)
 
 
-def test_signup_with_ref_stores_code_and_reports_signup(db, client):
-    with patch.object(auth_routes.affiliates, "report_signup") as mock_report:
+def test_signup_with_ref_stores_code_and_reports_signup(client):
+    """`ensure_wallet` is patched for the same reason as the JTS tests below:
+    signup calls it unconditionally, and unpatched it builds a real JTSClient
+    that posts to the live Token Service (its `TOKEN_SERVICE_URL` default is
+    the production URL). Nothing here is about wallets."""
+    with patch("services.token_wallet.ensure_wallet"), \
+         patch.object(auth_routes.affiliates, "report_signup") as mock_report:
         resp = _signup_form(client, ref="JAYS10", username="withref", email="withref@example.com")
 
     assert resp.status_code in (200, 303)
@@ -106,8 +72,9 @@ def test_signup_with_ref_stores_code_and_reports_signup(db, client):
     assert kwargs.get("ref_code") == "JAYS10" or (len(args) > 1 and args[1] == "JAYS10")
 
 
-def test_signup_without_ref_does_not_report_signup(db, client):
-    with patch.object(auth_routes.affiliates, "report_signup") as mock_report:
+def test_signup_without_ref_does_not_report_signup(client):
+    with patch("services.token_wallet.ensure_wallet"), \
+         patch.object(auth_routes.affiliates, "report_signup") as mock_report:
         resp = _signup_form(client, ref=None, username="noref", email="noref@example.com")
 
     assert resp.status_code in (200, 303)
@@ -118,22 +85,15 @@ def test_signup_without_ref_does_not_report_signup(db, client):
 # JTS wallet creation at signup (routes/auth_routes.py signup_submit)
 # ---------------------------------------------------------------- #
 
-def test_signup_creates_jts_wallet(db, client):
+def test_signup_creates_jts_wallet(client):
     """signup_submit should call ensure_wallet right after the new user is
     committed, so the wallet (and trial grant) exists as of signup rather
     than being created lazily on first AI use.
 
-    get_env and trigger_verification_email are patched out here because
-    _app_url() -> get_env(), and (separately) trigger_verification_email() ->
-    send_email_verification() -> get_env(), each open their own
-    SessionLocal() DB session rather than using the test's overridden get_db
-    dependency — a pre-existing, unrelated issue (same root cause as the 2
-    baseline failures in this file,
-    test_signup_with_ref_stores_code_and_reports_signup /
-    test_signup_without_ref_does_not_report_signup) that is out of scope
-    for this task."""
+    trigger_verification_email is patched out so the test can't reach real
+    SMTP if the developer's environment happens to have SMTP vars exported;
+    it is unrelated to what's asserted here."""
     with patch("services.token_wallet.ensure_wallet") as mock_ensure_wallet, \
-         patch.object(auth_routes, "get_env", return_value=""), \
          patch.object(auth_routes, "trigger_verification_email", return_value=False):
         resp = _signup_form(client, username="walletuser", email="walletuser@example.com")
 
@@ -145,25 +105,23 @@ def test_signup_creates_jts_wallet(db, client):
     assert called_user.username == "walletuser"
 
 
-def test_signup_succeeds_even_if_jts_ensure_wallet_raises(db, client):
+def test_signup_succeeds_even_if_jts_ensure_wallet_raises(client):
     """A JTS outage at signup time (network blip, JTS deployment down, etc.)
     must not crash the signup request or prevent the account from being
     created — ensure_wallet is called after the user is already committed,
     and any failure there is caught and logged so signup still proceeds.
 
-    get_env and trigger_verification_email are patched out for the same
-    unrelated get_env/SessionLocal reason as test_signup_creates_jts_wallet
-    above."""
+    trigger_verification_email is patched out for the same SMTP reason as
+    test_signup_creates_jts_wallet above."""
     with patch("services.token_wallet.ensure_wallet", side_effect=ConnectionError("boom")) as mock_ensure_wallet, \
-         patch.object(auth_routes, "get_env", return_value=""), \
          patch.object(auth_routes, "trigger_verification_email", return_value=False):
         resp = _signup_form(client, username="walletfail", email="walletfail@example.com")
 
     # Full success, not merely "didn't crash": redirected to /dashboard with
     # a session cookie set, proving the account was created and the user was
-    # logged in despite ensure_wallet raising. (Note: this test's `client`
-    # fixture uses its own isolated DB/engine, separate from the `db`
-    # fixture, so we verify via the response rather than a `db` query.)
+    # logged in despite ensure_wallet raising. Verified via the response
+    # rather than a `db` query: the request session is a different session
+    # from the `db` fixture's (same database, but its own identity map).
     assert resp.status_code == 303
     assert resp.headers["location"] == "/dashboard"
     assert COOKIE_NAME in resp.cookies
@@ -193,7 +151,7 @@ def _poison_session_ensure_wallet(db, user):
     db.commit()
 
 
-def test_signup_succeeds_when_ensure_wallet_local_commit_fails(db, client):
+def test_signup_succeeds_when_ensure_wallet_local_commit_fails(client):
     """Reproduces the code-review finding on commit ef14c7c: if the failure
     inside ensure_wallet comes from ITS OWN db.commit() (not the JTS HTTP
     call), the session is left needing a rollback. Without db.rollback() in
@@ -207,10 +165,17 @@ def test_signup_succeeds_when_ensure_wallet_local_commit_fails(db, client):
     above, trigger_verification_email is deliberately left un-mocked here:
     we need its real db.commit() to run against the SAME session
     ensure_wallet poisoned, to actually prove the rollback fix works. Only
-    get_env (for _app_url) and send_email_verification are patched, to route
-    around the pre-existing/unrelated env_configs SessionLocal issue and
-    avoid needing real SMTP config -- neither one touches the session under
-    test, so patching them doesn't weaken the reproduction.
+    get_env (for _app_url) and send_email_verification are patched -- neither
+    touches the session under test, so patching them doesn't weaken the
+    reproduction.
+
+    get_env stays patched here specifically (the other tests no longer need
+    to): conftest's in-memory engine uses StaticPool, so every session in a
+    test shares one connection, and a real get_env() would open a second
+    session on that same connection while the request session is deliberately
+    sitting in its pending-rollback state. That's a test-harness artifact --
+    in production get_env() gets its own connection -- and mocking it keeps
+    the artifact out of the reproduction.
 
     Before the routes/auth_routes.py fix (db.rollback() added to the
     ensure_wallet except clause), this test fails because the uncaught
