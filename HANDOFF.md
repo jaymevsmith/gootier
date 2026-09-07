@@ -1007,3 +1007,90 @@ since those apply suite-wide and were written before that upstream work existed.
 - PR #12 is unreviewed and unmerged. Nothing is deployed from this branch.
 - The `set_env()` and `services/secrets.py` notes from the 2026-09-05 entry
   still stand.
+
+## PR #12 merged and deployed (2026-09-06)
+
+[PR #12](https://github.com/jaymevsmith/gootier/pull/12) merged to `main` as
+`a4c4f98`. Railway's GitHub integration auto-triggered the build — no `railway up`
+was run, matching the PR #9 note above. New deployment
+`e9a03240-cacb-41f0-aab7-9bbfe2312807` (previously
+`938cac26-7b05-48be-b67e-3b6f06353946`), service `gootier` Online.
+
+Startup clean, both workers up, and `init_db` completed on each — worth calling
+out here specifically, because `init_db`'s `create_all` + `_seed_env_configs` is
+what guarantees `env_configs` exists, and the whole reason this branch's original
+two test failures were *not* a production bug.
+
+### Verified on the running container, not from the deploy's exit status
+
+Rung 3 — new-code-only probe. These signatures cannot exist in the old image:
+
+```
+RUNG3 get_env                : (key: str, default: str = '', *, db: Optional[Session] = None) -> str
+RUNG3 _smtp_config           : (db: Optional[Session] = None) -> dict
+RUNG3 send_email_verification: (to_email: str, verify_link: str, db: Optional[Session] = None) -> bool
+RUNG3 send_password_reset    : (to_email: str, reset_link: str, db: Optional[Session] = None) -> bool
+RUNG3 _app_url               : (request: Request, db: Optional[Session] = None) -> str
+RUNG3 db is keyword-only     : KEYWORD_ONLY
+RUNG3 profile wrapped        : True
+```
+
+Rung 4 — config actually resolves against the real Postgres, by *both* routes:
+
+```
+RUNG4 APP_URL no-session     : 'https://gootier.jhomeautomation.com'
+RUNG4 APP_URL with-session   : 'https://gootier.jhomeautomation.com'
+RUNG4 smtp host configured   : True | from_email: jhomeautomation+gootier@gmail.com
+RUNG4 smtp password present  : True
+RUNG4 TOKEN_SERVICE_URL set  : True
+RUNG4 TOKEN_SERVICE_API_KEY  : present
+RUNG4 session left open      : True
+```
+
+The last line is the ownership contract from the 2026-09-05 entry holding in
+production: `get_env(db=...)` must not close a session it was handed.
+
+Rung 5 — the changed function run against the live DB, then the public pages:
+
+```
+RUNG5 _app_url(request, db)  : https://gootier.jhomeautomation.com
+RUNG5 _app_url(request)      : https://gootier.jhomeautomation.com
+RUNG5 /health         -> 200  (error-page markers: 0)
+RUNG5 /login          -> 200  (error-page markers: 0)
+RUNG5 /signup         -> 200  (error-page markers: 0)
+RUNG5 /forgot-password-> 200  (error-page markers: 0)
+```
+
+### Not exercised, deliberately
+
+**No real signup was run against production.** It would create a live User row,
+mint a JTS wallet against the real Token Service (consuming a trial grant), and
+send a real verification email. The PR #9 verification did use a real account
+(`tradingjay101@gmail.com`) and that left manual wallet re-linking to clean up
+afterwards. The changed code paths were instead exercised directly in-container
+against the real Postgres, which covers the config reads without the side
+effects. If an end-to-end signup on prod is wanted, it is a deliberate,
+separate decision with cleanup attached.
+
+### Traps hit while deploying
+
+- **`timeout` does not exist on macOS** (it is `gtimeout`, from coreutils). A
+  wrapped `railway ssh` invocation just dies with `command not found`.
+- **A deploy-watch poll that mis-parses `railway status --json` reports success
+  instantly.** The first watch here "detected" a new deployment 12 seconds in,
+  because a wrong JSON path returned `?`, which compared unequal to the old
+  deployment ID. The status line still read `Building`. Poll the human-readable
+  `status:` / `deployment ID:` lines and treat `Building|Deploying|Initializing`
+  as not-done — and make the loop emit on `Failed|Crashed` too, or a crashloop
+  is indistinguishable from still-building.
+
+### Still open
+
+- **`README.md` line 28 says the deploy target is "AWS ECS Fargate (Docker),
+  Secrets Manager for env, RDS Postgres".** That is wrong — this service deploys
+  to Railway from `railway.toml` via the GitHub integration, as every deploy
+  entry in this log records. `gootier-app/CLAUDE.md` is worse: it describes the
+  `claude-trading` repo's AWS pipeline entirely. Both are stale enough to send
+  the next person to the wrong dashboard. Not fixed here.
+- The `set_env()` and `services/secrets.py` notes from the 2026-09-05 entry
+  still stand.
