@@ -2,9 +2,9 @@
 #
 # Gootier production image.
 #
-# Pinned to linux/amd64 to match the ECS Fargate target. Apple Silicon
-# Docker defaults to arm64, which would produce a non-runnable image on
-# AWS — never drop the --platform flag at FROM or in the build command.
+# Pinned to linux/amd64 because Railway builds and runs x86_64. Apple Silicon
+# Docker defaults to arm64, which would produce a non-runnable image there —
+# never drop the --platform flag at FROM or in the build command.
 
 ARG PYTHON_VERSION=3.11
 

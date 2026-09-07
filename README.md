@@ -25,7 +25,7 @@ Subscription SaaS for end-user marketers — connect your socials via OAuth, wri
 | AI | Anthropic SDK with prompt caching on the marketing-plan context |
 | Billing | `stripe` SDK with hosted Checkout + Customer Portal |
 | Scheduler | `asyncio.create_task` loop on a 60-second tick — no Celery, no APScheduler |
-| Deploy target | AWS ECS Fargate (Docker), Secrets Manager for env, RDS Postgres |
+| Deploy target | Railway (Docker, via `railway.toml`), Railway Postgres, env in the Railway dashboard + `env_configs` overrides |
 
 ## Quick start
 
@@ -129,26 +129,63 @@ Never use `alert()`, `confirm()`, or inline toast HTML. Validation uses `warning
 
 ## Deployment
 
-Target is AWS ECS Fargate behind an ALB, image in ECR, secrets in AWS Secrets Manager grouped by concern:
+**Railway** — project `Gootier_App`, service `gootier`, environment `production`,
+serving https://gootier.jhomeautomation.com.
+
+### Deploying is merging
+
+The service is git-linked to this repo, so **merging to `main` triggers the build
+automatically**. There is no deploy command to run.
+
+Do not reach for `railway up` instead. A checkout that is behind `main` will
+build and ship happily, which means deploying by hand from a stale working copy
+is a silent rollback. If a manual deploy is genuinely needed, run it from an
+up-to-date worktree with `railway up --path-as-root .`.
+
+Note that this cuts both ways: a docs-only merge rebuilds and redeploys too, so a
+changed deployment ID does not by itself mean the code changed.
+
+### How the container runs
+
+`railway.toml` pins the build to the `Dockerfile` and sets `healthcheckPath =
+"/health"` with a 300-second timeout. That window is deliberately generous —
+`init_db()` runs `create_all`, the inline `_upgrade_*` migrations, the config and
+tier seeds, and an at-rest token re-encrypt pass on *every* cold boot, and with
+multiple workers serialized through a `pg_advisory_lock` the total is roughly 2×
+the single-worker time.
+
+The image's `CMD` is shell-form so `${PORT}` expands at container start:
 
 ```
-gootier/app       SECRET_KEY, APP_URL, ALLOWED_ORIGINS
-gootier/db        DATABASE_URL
-gootier/smtp      SMTP_HOST, SMTP_PORT, SMTP_USERNAME, SMTP_PASSWORD, FROM_EMAIL
-gootier/anthropic ANTHROPIC_API_KEY
-gootier/stripe    STRIPE_SECRET_KEY, STRIPE_PUBLISHABLE_KEY, STRIPE_WEBHOOK_SECRET, STRIPE_PRICE_*
-gootier/oauth-meta META_APP_ID, META_APP_SECRET
+gunicorn -k uvicorn.workers.UvicornWorker -w 2 -t 120 -b 0.0.0.0:${PORT:-8000} main:app
 ```
 
-Run with `gunicorn -k uvicorn.workers.UvicornWorker -w 2 -t 120 main:app`. ALB health check hits `GET /health`.
+Railway injects `PORT`, so the listening port in production is **not** 8000 —
+don't hardcode it anywhere. Don't add a `startCommand` to `railway.toml` either;
+it would override the Dockerfile, and Railway's own `${PORT}` expansion there
+isn't reliable.
 
-**One-time setup checklist:**
-1. Create ECR repo, ECS cluster, ALB + target group on `:8000` with `/health` health path
-2. Create RDS Postgres, populate `gootier/db` secret with the connection URL
-3. Fill all `CHANGE_ME` values in the other secrets groups
+### Configuration
+
+`DATABASE_URL` comes from the Railway Postgres plugin. Everything else is a
+Railway dashboard variable, overridable at runtime from `/admin/env` — see
+[Configuration](#configuration) for the full precedence rules.
+
+**One-time setup:**
+1. Add the Railway Postgres plugin — it provisions `DATABASE_URL`
+2. Set `SECRET_KEY` and `APP_URL` (and `ALLOWED_ORIGINS`) as Railway variables — both are locked against `/admin/env` edits
+3. Set the SMTP, Anthropic, Stripe, Token Service and OAuth keys, either as Railway variables or, once the app is up, from `/admin/env`
 4. Register the Stripe webhook endpoint at `{APP_URL}/webhooks/stripe`
 5. Register your Meta OAuth redirect URI as `{APP_URL}/oauth/facebook/callback`
-6. First deploy → `python create_admin.py ...` inside the running container to bootstrap the admin
+6. Bootstrap the first admin inside the running container:
+   `railway ssh --service gootier -- python create_admin.py <username> <email> <password>`
+
+### Verifying a deploy
+
+A green health check proves the container starts, not that it runs the code you
+merged. Probe for something that exists only in the new build — a signature, a
+route, a string — from inside the running container with `railway ssh`. Recent
+`HANDOFF.md` entries show the pattern and the output worth capturing.
 
 ## Known follow-ups
 
