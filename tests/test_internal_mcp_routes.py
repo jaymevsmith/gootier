@@ -221,3 +221,24 @@ def test_schedule_post_enforces_the_monthly_quota(client, monkeypatch):
     )
     assert resp.status_code == 403
     assert resp.json()["detail"]["error"] == "posts_quota_exceeded"
+
+
+def test_schedule_post_rejects_an_empty_connection_list(client, monkeypatch):
+    c, TestingSession = client
+    _configure(monkeypatch)
+    s = TestingSession()
+    _seed_bronze_tier(s)
+    owner = User(username="jane", email="jane@example.com", hashed_password="x",
+                role="client", tier="bronze", jhome_sub="sub-sp4")
+    s.add(owner)
+    s.commit()
+    s.close()
+
+    resp = c.post(
+        "/internal/mcp/schedule-post",
+        json={"email": "jane@example.com", "jhome_sub": "sub-sp4", "email_verified": True,
+             "content": "hello", "connection_ids": []},
+        headers={"X-Internal-Key": "test-mcp-key"},
+    )
+    assert resp.status_code == 400
+    assert resp.json()["detail"]["error"] == "invalid_connections"

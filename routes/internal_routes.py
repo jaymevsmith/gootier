@@ -246,6 +246,16 @@ async def mcp_schedule_post(req: SchedulePostRequest, response: Response,
     response.headers["Cache-Control"] = "no-store"
     user = _resolve_mcp_identity(db, req)
 
+    if not req.connection_ids:
+        # Without this, an empty list passes ownership vacuously (0 == 0)
+        # and, when unscheduled, publish_to_connections([]) returns {} --
+        # successes (0) == len(owned) (0) reads as "published" with zero
+        # connections actually posted to. A false success is worse than a
+        # refusal here.
+        raise HTTPException(status_code=400,
+                            detail={"error": "invalid_connections",
+                                    "message": "connection_ids must not be empty"})
+
     owned = db.query(SocialConnection).filter(
         SocialConnection.id.in_(req.connection_ids),
         SocialConnection.user_id == user.id,
