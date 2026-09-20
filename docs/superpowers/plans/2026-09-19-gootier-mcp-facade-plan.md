@@ -451,6 +451,16 @@ def _resolve_mcp_identity(db: Session, req: "_McpIdentityRequest") -> User:
         db, jhome_sub=req.jhome_sub, email=email,
         email_verified=req.email_verified, name=None,
     )
+    # Task 1's implementer found and fixed a real bug: resolve_or_create_gootier_user
+    # deliberately does NOT commit a jhome_sub adoption itself (an eager commit
+    # there broke handoff()'s own "nothing persists if a LATER check in that
+    # function refuses the request" guarantee). By the time this helper's call
+    # returns successfully, every identity-related refusal inside
+    # resolve_or_create_gootier_user (ambiguous/inactive/unverified/linked_elsewhere/
+    # admin) has already passed -- a route-level permission or quota refusal AFTER
+    # this point is orthogonal to identity and must not roll the binding back. So
+    # this is the right place to commit it, once, for all 5 routes.
+    db.commit()
     _load_permissions(db, user)
     return user
 
