@@ -367,3 +367,49 @@ def test_draft_campaign_enforces_the_monthly_quota(client, monkeypatch):
     )
     assert resp.status_code == 403
     assert resp.json()["detail"]["error"] == "ai_generations_quota_exceeded"
+
+
+def test_mcp_routes_never_link_the_wallet(client, monkeypatch):
+    """The design spec is explicit: none of the 5 /internal/mcp/* routes
+    bill Jhome tokens this slice, so none of them should link the wallet --
+    unlike /internal/handoff, which still must. Found during the Part A
+    whole-branch review: resolve_or_create_gootier_user inherited
+    handoff()'s unconditional wallet-link, silently contradicting that
+    intent for every MCP route."""
+    c, TestingSession = client
+    _configure(monkeypatch)
+    calls = []
+    monkeypatch.setattr(
+        "routes.internal_routes.token_wallet.link_wallet_to_customer",
+        lambda db, user: calls.append(user.id) or 999,
+    )
+
+    resp = c.post(
+        "/internal/mcp/ensure-account",
+        json={"email": "new-wallet-check@example.com", "jhome_sub": "sub-wallet-1",
+             "email_verified": True},
+        headers={"X-Internal-Key": "test-mcp-key"},
+    )
+    assert resp.status_code == 200
+    assert calls == []
+
+
+def test_schedule_email_blast_rejects_an_empty_recipient_list(client, monkeypatch):
+    c, TestingSession = client
+    _configure(monkeypatch)
+    s = TestingSession()
+    _seed_bronze_tier(s)
+    owner = User(username="jane", email="jane@example.com", hashed_password="x",
+                role="client", tier="bronze", jhome_sub="sub-eb4")
+    s.add(owner)
+    s.commit()
+    s.close()
+
+    resp = c.post(
+        "/internal/mcp/schedule-email-blast",
+        json={"email": "jane@example.com", "jhome_sub": "sub-eb4", "email_verified": True,
+             "subject": "Hi", "body_html": "<p>hi</p>", "recipients": []},
+        headers={"X-Internal-Key": "test-mcp-key"},
+    )
+    assert resp.status_code == 400
+    assert resp.json()["detail"]["error"] == "invalid_recipients"

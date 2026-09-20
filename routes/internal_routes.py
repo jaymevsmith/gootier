@@ -101,15 +101,27 @@ def _create_user(db: Session, email: str, jhome_sub: str | None, name: str | Non
 
 def resolve_or_create_gootier_user(
     db: Session, *, jhome_sub: str | None, email: str, email_verified: bool,
-    name: str | None = None,
+    name: str | None = None, link_wallet: bool = True,
 ) -> User:
-    """Find-or-create a Gootier user by email, mirroring handoff()'s own
-    refusal logic exactly -- every one of the 5 /internal/mcp/* routes calls
-    this directly (not only ensure-account), so the system works correctly
-    even if a customer's AI client never calls ensure-account first,
-    matching MidCanvas's generate_image_for_mcp precedent.
+    """Find-or-create a Gootier user by email -- every one of the 5
+    /internal/mcp/* routes calls this directly (not only ensure-account), so
+    the system works correctly even if a customer's AI client never calls
+    ensure-account first, matching MidCanvas's generate_image_for_mcp
+    precedent.
 
     `email` must already be normalized (.strip().lower()) by the caller.
+
+    `link_wallet` defaults True to preserve handoff()'s existing behavior
+    unchanged. The MCP facade design spec is explicit that NONE of the 5
+    /internal/mcp/* routes should link the Jhome Token Service wallet --
+    nothing in that slice bills tokens, so wiring it in would be speculative
+    scope with nothing to exercise it (see
+    docs/superpowers/specs/2026-09-15-gootier-mcp-facade-design.md). Found
+    during the Part A whole-branch review: this shared helper inherited
+    handoff()'s unconditional wallet-link, which silently contradicted that
+    stated intent for every one of the 5 routes, not just ensure-account --
+    a class of bug a per-route diff review can't see. _resolve_mcp_identity
+    passes link_wallet=False explicitly.
     """
     matches = db.query(User).filter(func.lower(User.email) == email).order_by(User.id).all()
     if len(matches) > 1:
@@ -157,7 +169,7 @@ def resolve_or_create_gootier_user(
         log.warning("mcp identity refused: user %s has platform admin access", user.id)
         raise HTTPException(status_code=403, detail={"error": "admin_account_not_supported"})
 
-    if user.jhome_sub:
+    if user.jhome_sub and link_wallet:
         try:
             token_wallet.link_wallet_to_customer(db, user)
         except Exception:  # noqa: BLE001 -- must never fail an identity resolution on this
@@ -178,7 +190,7 @@ def _resolve_mcp_identity(db: Session, req: "_McpIdentityRequest") -> User:
         raise HTTPException(status_code=422, detail={"error": "invalid_email"})
     user = resolve_or_create_gootier_user(
         db, jhome_sub=req.jhome_sub, email=email,
-        email_verified=req.email_verified, name=None,
+        email_verified=req.email_verified, name=None, link_wallet=False,
     )
     # See Task 1's note: resolve_or_create_gootier_user does NOT commit a
     # jhome_sub binding itself. By the time this call returns successfully,
@@ -319,6 +331,19 @@ def mcp_schedule_email_blast(req: ScheduleEmailBlastRequest, response: Response,
                              db: Session = Depends(get_db)) -> dict:
     response.headers["Cache-Control"] = "no-store"
     user = _resolve_mcp_identity(db, req)
+
+    if not req.recipients:
+        # Same reasoning as schedule-post's empty-connection_ids guard: an
+        # empty list still passes both quota checks (0 never exceeds a cap)
+        # and would create a junk EmailBlast row while consuming a
+        # blasts_per_month unit for zero actual communication. Found during
+        # the Part A whole-branch review re-examining the per-task
+        # conclusion that the status ternary "fails safe" -- it does avoid a
+        # false SUCCESS, but not wasted quota or a junk row, which is the
+        # same class of harm the connection_ids guard exists to prevent.
+        raise HTTPException(status_code=400,
+                            detail={"error": "invalid_recipients",
+                                    "message": "recipients must not be empty"})
 
     if not user.perm("marketing.email_blast"):
         raise HTTPException(status_code=403,
