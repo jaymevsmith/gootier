@@ -85,6 +85,73 @@ def _create_user(db: Session, email: str, jhome_sub: str | None, name: str | Non
     raise HTTPException(status_code=500, detail="could not allocate a username")
 
 
+def resolve_or_create_gootier_user(
+    db: Session, *, jhome_sub: str | None, email: str, email_verified: bool,
+    name: str | None = None,
+) -> User:
+    """Find-or-create a Gootier user by email, mirroring handoff()'s own
+    refusal logic exactly -- every one of the 5 /internal/mcp/* routes calls
+    this directly (not only ensure-account), so the system works correctly
+    even if a customer's AI client never calls ensure-account first,
+    matching MidCanvas's generate_image_for_mcp precedent.
+
+    `email` must already be normalized (.strip().lower()) by the caller.
+    """
+    matches = db.query(User).filter(func.lower(User.email) == email).order_by(User.id).all()
+    if len(matches) > 1:
+        log.warning("mcp identity refused: %d case-variant accounts for email %s", len(matches), email)
+        raise HTTPException(status_code=409, detail={"error": "ambiguous_identity"})
+    user = matches[0] if matches else None
+
+    if user is not None and not user.is_active:
+        log.warning("mcp identity refused: user %s is deactivated", user.id)
+        raise HTTPException(status_code=403, detail={"error": "account_inactive"})
+
+    if user is not None and not email_verified:
+        log.warning("mcp identity refused: caller did not assert email_verified for user %s", user.id)
+        raise HTTPException(status_code=409, detail={"error": "unverified_caller_email"})
+
+    if user is None and jhome_sub:
+        existing_sub_holder = db.query(User).filter(User.jhome_sub == jhome_sub).first()
+        if existing_sub_holder is not None:
+            log.warning(
+                "mcp identity refused: jhome_sub %s already belongs to a different user (%s), "
+                "but the request's email does not match that user",
+                jhome_sub, existing_sub_holder.id,
+            )
+            raise HTTPException(status_code=409, detail={"error": "linked_elsewhere"})
+
+    if user is None:
+        user = _create_user(db, email, jhome_sub, name)
+    elif jhome_sub and not user.jhome_sub:
+        # NOTE: deliberately not committed here. A caller-side refusal that
+        # fires later in this function (e.g. the admin check below) must
+        # leave zero DB side effects -- see
+        # test_admin_jhome_sub_adoption_does_not_persist_on_refusal in
+        # tests/test_internal_handoff.py. The caller (handoff() or an
+        # /internal/mcp/* route) is responsible for committing once identity
+        # resolution has fully succeeded.
+        user.jhome_sub = jhome_sub
+    elif jhome_sub and user.jhome_sub and user.jhome_sub != jhome_sub:
+        log.warning(
+            "mcp identity refused: user %s carried jhome_sub %s but it already has %s",
+            user.id, jhome_sub, user.jhome_sub,
+        )
+        raise HTTPException(status_code=409, detail={"error": "linked_elsewhere"})
+
+    if user.has_role("admin"):
+        log.warning("mcp identity refused: user %s has platform admin access", user.id)
+        raise HTTPException(status_code=403, detail={"error": "admin_account_not_supported"})
+
+    if user.jhome_sub:
+        try:
+            token_wallet.link_wallet_to_customer(db, user)
+        except Exception:  # noqa: BLE001 -- must never fail an identity resolution on this
+            log.exception("could not link wallet for user %s", user.id)
+
+    return user
+
+
 @router.post("/internal/handoff", dependencies=[Depends(require_internal_key)])
 def handoff(req: HandoffRequest, response: Response, db: Session = Depends(get_db)) -> dict:
     response.headers["Cache-Control"] = "no-store"
@@ -97,79 +164,10 @@ def handoff(req: HandoffRequest, response: Response, db: Session = Depends(get_d
     if not _EMAIL_RE.match(email):
         raise HTTPException(status_code=422, detail="invalid email")
 
-    matches = db.query(User).filter(func.lower(User.email) == email).order_by(User.id).all()
-    if len(matches) > 1:
-        log.warning("handoff refused: %d case-variant accounts for email %s", len(matches), email)
-        # Jhome Auth's own code for "more than one account answers to this
-        # identity, so binding either would be a guess". The Backoffice has no
-        # _REFUSAL_COPY entry for it yet (it is listed in _TERMINAL_REFUSALS),
-        # so it renders the generic action-needed page -- correct behaviour,
-        # just uncopied.
-        raise HTTPException(status_code=409, detail={"error": "ambiguous_identity"})
-    user = matches[0] if matches else None
-
-    if user is not None and not user.is_active:
-        log.warning("handoff refused: user %s is deactivated", user.id)
-        # 403, NOT 401. 401 is the auth layer's code for "your shared key is
-        # wrong", and the Backoffice logs an ERROR-level "handoff
-        # misconfigured (401)" on it -- a suspended customer clicking the tile
-        # would raise a false credential-rotation alarm every time. Jhome Auth
-        # uses 403 + account_inactive for this exact condition.
-        raise HTTPException(status_code=403, detail={"error": "account_inactive"})
-
-    if user is not None and not req.email_verified:
-        # Matching by email is a WEAK signal: it binds jhome_sub onto an
-        # account this caller has only named, not proven. Refuse unless the
-        # Backoffice explicitly vouched for the address. Same code and status
-        # as Jhome Auth's equivalent gate; it has _REFUSAL_COPY there, which
-        # points the customer at /account to confirm their address.
-        log.warning("handoff refused: caller did not assert email_verified for user %s", user.id)
-        raise HTTPException(status_code=409, detail={"error": "unverified_caller_email"})
-
-    if user is None and req.jhome_sub:
-        existing_sub_holder = db.query(User).filter(User.jhome_sub == req.jhome_sub).first()
-        if existing_sub_holder is not None:
-            log.warning(
-                "handoff refused: jhome_sub %s already belongs to a different user (%s), "
-                "but the request's email does not match that user",
-                req.jhome_sub, existing_sub_holder.id,
-            )
-            # Jhome Auth's linked_elsewhere: this identity is already bound to
-            # a different account here. (Its copy is written for the mirror
-            # case -- the account owns a different sub -- but the customer-
-            # facing next step is the same one, and it is the closest real
-            # code in the fleet.)
-            raise HTTPException(status_code=409, detail={"error": "linked_elsewhere"})
-
-    if user is None:
-        # NOTE: a concurrent-same-email-insert race (two handoffs for the
-        # exact same brand-new email at once) is not self-healed here --
-        # genuinely rarer than the jhome_sub-mismatch case above, and not
-        # worth more retry machinery for the marginal benefit.
-        user = _create_user(db, email, req.jhome_sub, req.name)
-    elif req.jhome_sub and not user.jhome_sub:
-        user.jhome_sub = req.jhome_sub
-    elif req.jhome_sub and user.jhome_sub and user.jhome_sub != req.jhome_sub:
-        log.warning(
-            "handoff refused: user %s carried jhome_sub %s but it already has %s",
-            user.id, req.jhome_sub, user.jhome_sub,
-        )
-        raise HTTPException(status_code=409, detail={"error": "linked_elsewhere"})
-
-    if user.has_role("admin"):
-        log.warning("handoff refused: user %s has platform admin access", user.id)
-        # Gootier-specific: no other connected app refuses on platform-admin
-        # role, so there is no fleet code to reuse. The Backoffice's
-        # _REFUSAL_COPY has no entry for this yet, so it renders the generic
-        # "could not sign you in" action-needed page until one is added there
-        # (a Backoffice-side follow-up, out of scope here).
-        raise HTTPException(status_code=403, detail={"error": "admin_account_not_supported"})
-
-    if user.jhome_sub:
-        try:
-            token_wallet.link_wallet_to_customer(db, user)
-        except Exception:  # noqa: BLE001 -- a login path must never fail on this
-            log.exception("could not link wallet for user %s", user.id)
+    user = resolve_or_create_gootier_user(
+        db, jhome_sub=req.jhome_sub, email=email,
+        email_verified=req.email_verified, name=req.name,
+    )
 
     token = generate_token()
     db.add(HandoffToken(token_hash=hash_token(token), user_id=user.id,
