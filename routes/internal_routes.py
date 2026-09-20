@@ -358,6 +358,40 @@ def mcp_schedule_email_blast(req: ScheduleEmailBlastRequest, response: Response,
     return {"id": blast.id, "status": blast.status}
 
 
+class DraftCampaignRequest(_McpIdentityRequest):
+    plan: str = Field(..., min_length=10)
+    schedule: str = ""
+    count: int = Field(5, ge=1, le=20)
+    channels: List[str] = ["social_post", "email_blast"]
+
+
+@router.post("/internal/mcp/draft-campaign", dependencies=[Depends(require_mcp_internal_key)])
+def mcp_draft_campaign(req: DraftCampaignRequest, response: Response,
+                       db: Session = Depends(get_db)) -> dict:
+    response.headers["Cache-Control"] = "no-store"
+    user = _resolve_mcp_identity(db, req)
+
+    if not user.perm("marketing.ai_generate"):
+        raise HTTPException(status_code=403,
+                            detail={"error": "plan_upgrade_required",
+                                    "message": "Requires permission: marketing.ai_generate"})
+    try:
+        check_and_raise(db, user, "ai_generations_per_month")
+    except HTTPException as exc:
+        _raise_quota_error(exc, "ai_generations_quota_exceeded")
+
+    try:
+        result = generate_campaign(plan=req.plan, schedule=req.schedule,
+                                   count=req.count, channels=req.channels)
+    except Exception as e:
+        raise HTTPException(status_code=502,
+                            detail={"error": "ai_generation_failed", "message": str(e)})
+
+    log_action(db, user, "AI_GENERATE", "Campaign",
+              detail=f"Generated {len((result or {}).get('items', []))} item(s) via MCP")
+    return result
+
+
 @router.post("/internal/handoff", dependencies=[Depends(require_internal_key)])
 def handoff(req: HandoffRequest, response: Response, db: Session = Depends(get_db)) -> dict:
     response.headers["Cache-Control"] = "no-store"

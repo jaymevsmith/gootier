@@ -321,3 +321,49 @@ def test_schedule_email_blast_refuses_a_trial_tier_caller(client, monkeypatch):
     )
     assert resp.status_code == 403
     assert resp.json()["detail"]["error"] == "plan_upgrade_required"
+
+
+@patch("routes.internal_routes.generate_campaign")
+def test_draft_campaign_returns_the_generated_items(mock_generate, client, monkeypatch):
+    c, TestingSession = client
+    _configure(monkeypatch)
+    s = TestingSession()
+    _seed_bronze_tier(s)
+    owner = User(username="jane", email="jane@example.com", hashed_password="x",
+                role="client", tier="bronze", jhome_sub="sub-dc1")
+    s.add(owner)
+    s.commit()
+    s.close()
+
+    mock_generate.return_value = {"items": [{"kind": "social_post", "content": "Buy now"}]}
+
+    resp = c.post(
+        "/internal/mcp/draft-campaign",
+        json={"email": "jane@example.com", "jhome_sub": "sub-dc1", "email_verified": True,
+             "plan": "A brand new coffee shop opening downtown next month.",
+             "schedule": "weekly", "count": 3, "channels": ["social_post"]},
+        headers={"X-Internal-Key": "test-mcp-key"},
+    )
+    assert resp.status_code == 200
+    assert resp.json() == {"items": [{"kind": "social_post", "content": "Buy now"}]}
+
+
+def test_draft_campaign_enforces_the_monthly_quota(client, monkeypatch):
+    c, TestingSession = client
+    _configure(monkeypatch)
+    s = TestingSession()
+    _seed_bronze_tier(s, ai_generations_per_month=0)
+    owner = User(username="jane", email="jane@example.com", hashed_password="x",
+                role="client", tier="bronze", jhome_sub="sub-dc2")
+    s.add(owner)
+    s.commit()
+    s.close()
+
+    resp = c.post(
+        "/internal/mcp/draft-campaign",
+        json={"email": "jane@example.com", "jhome_sub": "sub-dc2", "email_verified": True,
+             "plan": "A brand new coffee shop opening downtown next month."},
+        headers={"X-Internal-Key": "test-mcp-key"},
+    )
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["error"] == "ai_generations_quota_exceeded"
