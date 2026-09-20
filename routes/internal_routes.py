@@ -231,6 +231,71 @@ def mcp_social_connections(req: SocialConnectionsRequest, response: Response,
     ]}
 
 
+class SchedulePostRequest(_McpIdentityRequest):
+    content: str = Field(..., min_length=1, max_length=5000)
+    connection_ids: List[int]
+    image_url: str | None = None
+    video_url: str | None = None
+    link_url: str | None = None
+    scheduled_at: datetime | None = None
+
+
+@router.post("/internal/mcp/schedule-post", dependencies=[Depends(require_mcp_internal_key)])
+async def mcp_schedule_post(req: SchedulePostRequest, response: Response,
+                            db: Session = Depends(get_db)) -> dict:
+    response.headers["Cache-Control"] = "no-store"
+    user = _resolve_mcp_identity(db, req)
+
+    owned = db.query(SocialConnection).filter(
+        SocialConnection.id.in_(req.connection_ids),
+        SocialConnection.user_id == user.id,
+        SocialConnection.is_active == True,  # noqa: E712
+    ).all()
+    if len(owned) != len(req.connection_ids):
+        raise HTTPException(status_code=400,
+                            detail={"error": "invalid_connections",
+                                    "message": "One or more connections invalid"})
+
+    if not user.perm("marketing.social_post"):
+        raise HTTPException(status_code=403,
+                            detail={"error": "plan_upgrade_required",
+                                    "message": "Requires permission: marketing.social_post"})
+    try:
+        check_and_raise(db, user, "posts_per_month")
+    except HTTPException as exc:
+        _raise_quota_error(exc, "posts_quota_exceeded")
+
+    post = SocialPost(
+        user_id=user.id,
+        content=req.content,
+        image_url=req.image_url,
+        video_url=req.video_url,
+        link_url=req.link_url,
+        connection_ids=",".join(str(c.id) for c in owned),
+        scheduled_at=req.scheduled_at,
+        status="pending",
+    )
+    db.add(post)
+    db.commit()
+    db.refresh(post)
+
+    if not req.scheduled_at:
+        results = await publish_to_connections(
+            owned, post.content, link_url=post.link_url,
+            image_url=post.image_url, video_url=post.video_url,
+        )
+        successes = sum(1 for r in results.values() if r.get("success"))
+        post.status = ("published" if successes == len(owned)
+                       else "partial" if successes else "failed")
+        post.published_at = datetime.utcnow()
+        import json as _json
+        post.publish_results = _json.dumps({str(k): v for k, v in results.items()})
+        db.commit()
+
+    log_action(db, user, "CREATE", "SocialPost", str(post.id), detail="via MCP")
+    return {"id": post.id, "status": post.status}
+
+
 @router.post("/internal/handoff", dependencies=[Depends(require_internal_key)])
 def handoff(req: HandoffRequest, response: Response, db: Session = Depends(get_db)) -> dict:
     response.headers["Cache-Control"] = "no-store"
