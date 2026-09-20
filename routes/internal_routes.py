@@ -24,6 +24,7 @@ from models import EmailBlast, HandoffToken, SocialConnection, SocialPost, User,
 from routes.oauth_routes import _unique_username_from_email
 from services.ai_generator import generate_campaign
 from services.env_config import get_env
+from services.email_utils import send_blast_email
 from services.handoff import generate_token, hash_token, default_expiry
 from services.quotas import check_and_raise, check_per_call
 from services.social_publish import publish_to_connections
@@ -304,6 +305,57 @@ async def mcp_schedule_post(req: SchedulePostRequest, response: Response,
 
     log_action(db, user, "CREATE", "SocialPost", str(post.id), detail="via MCP")
     return {"id": post.id, "status": post.status}
+
+
+class ScheduleEmailBlastRequest(_McpIdentityRequest):
+    subject: str = Field(..., min_length=1, max_length=200)
+    body_html: str = Field(..., min_length=1)
+    recipients: List[str]
+    scheduled_at: datetime | None = None
+
+
+@router.post("/internal/mcp/schedule-email-blast", dependencies=[Depends(require_mcp_internal_key)])
+def mcp_schedule_email_blast(req: ScheduleEmailBlastRequest, response: Response,
+                             db: Session = Depends(get_db)) -> dict:
+    response.headers["Cache-Control"] = "no-store"
+    user = _resolve_mcp_identity(db, req)
+
+    if not user.perm("marketing.email_blast"):
+        raise HTTPException(status_code=403,
+                            detail={"error": "plan_upgrade_required",
+                                    "message": "Requires permission: marketing.email_blast"})
+    try:
+        check_and_raise(db, user, "blasts_per_month")
+    except HTTPException as exc:
+        _raise_quota_error(exc, "blasts_quota_exceeded")
+    try:
+        check_per_call(db, user, "blast_recipients", len(req.recipients))
+    except HTTPException as exc:
+        _raise_quota_error(exc, "recipient_cap_exceeded")
+
+    blast = EmailBlast(
+        user_id=user.id,
+        subject=req.subject,
+        body_html=req.body_html,
+        recipient_list="\n".join(req.recipients),
+        recipient_count=len(req.recipients),
+        scheduled_at=req.scheduled_at,
+        status="pending",
+    )
+    db.add(blast)
+    db.commit()
+    db.refresh(blast)
+
+    if not req.scheduled_at:
+        sent, failed = send_blast_email(blast.subject, blast.body_html, req.recipients)
+        blast.sent_count = sent
+        blast.failed_count = failed
+        blast.status = ("sent" if failed == 0 and sent > 0
+                        else "partial" if sent > 0 else "failed")
+        db.commit()
+
+    log_action(db, user, "CREATE", "EmailBlast", str(blast.id), detail="via MCP")
+    return {"id": blast.id, "status": blast.status}
 
 
 @router.post("/internal/handoff", dependencies=[Depends(require_internal_key)])

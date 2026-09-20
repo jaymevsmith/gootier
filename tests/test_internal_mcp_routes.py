@@ -242,3 +242,82 @@ def test_schedule_post_rejects_an_empty_connection_list(client, monkeypatch):
     )
     assert resp.status_code == 400
     assert resp.json()["detail"]["error"] == "invalid_connections"
+
+
+from models import EmailBlast
+
+
+@patch("routes.internal_routes.send_blast_email")
+def test_schedule_email_blast_sends_immediately_when_unscheduled(mock_send, client, monkeypatch):
+    c, TestingSession = client
+    _configure(monkeypatch)
+    s = TestingSession()
+    _seed_bronze_tier(s)
+    owner = User(username="jane", email="jane@example.com", hashed_password="x",
+                role="client", tier="bronze", jhome_sub="sub-eb1")
+    s.add(owner)
+    s.commit()
+    s.close()
+
+    mock_send.return_value = (2, 0)
+
+    resp = c.post(
+        "/internal/mcp/schedule-email-blast",
+        json={"email": "jane@example.com", "jhome_sub": "sub-eb1", "email_verified": True,
+             "subject": "Hi", "body_html": "<p>hi</p>",
+             "recipients": ["a@x.com", "b@x.com"]},
+        headers={"X-Internal-Key": "test-mcp-key"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "sent"
+
+    s = TestingSession()
+    blast = s.query(EmailBlast).filter(EmailBlast.id == resp.json()["id"]).first()
+    assert blast.sent_count == 2
+    s.close()
+
+
+def test_schedule_email_blast_enforces_the_recipient_cap(client, monkeypatch):
+    c, TestingSession = client
+    _configure(monkeypatch)
+    s = TestingSession()
+    _seed_bronze_tier(s, blast_recipients=1)
+    owner = User(username="jane", email="jane@example.com", hashed_password="x",
+                role="client", tier="bronze", jhome_sub="sub-eb2")
+    s.add(owner)
+    s.commit()
+    s.close()
+
+    resp = c.post(
+        "/internal/mcp/schedule-email-blast",
+        json={"email": "jane@example.com", "jhome_sub": "sub-eb2", "email_verified": True,
+             "subject": "Hi", "body_html": "<p>hi</p>",
+             "recipients": ["a@x.com", "b@x.com"]},
+        headers={"X-Internal-Key": "test-mcp-key"},
+    )
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["error"] == "recipient_cap_exceeded"
+
+
+def test_schedule_email_blast_refuses_a_trial_tier_caller(client, monkeypatch):
+    c, TestingSession = client
+    _configure(monkeypatch)
+    s = TestingSession()
+    import json
+    s.add(TierConfig(tier="trial", perms_json=json.dumps({"marketing.email_blast": False}),
+                     quotas_json=json.dumps({"blasts_per_month": 0, "blast_recipients": 0})))
+    s.commit()
+    owner = User(username="jane", email="jane@example.com", hashed_password="x",
+                role="client", tier="trial", jhome_sub="sub-eb3")
+    s.add(owner)
+    s.commit()
+    s.close()
+
+    resp = c.post(
+        "/internal/mcp/schedule-email-blast",
+        json={"email": "jane@example.com", "jhome_sub": "sub-eb3", "email_verified": True,
+             "subject": "Hi", "body_html": "<p>hi</p>", "recipients": ["a@x.com"]},
+        headers={"X-Internal-Key": "test-mcp-key"},
+    )
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["error"] == "plan_upgrade_required"
