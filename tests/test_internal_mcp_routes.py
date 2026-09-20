@@ -83,3 +83,39 @@ def test_ensure_account_reuses_an_existing_user_by_email(client, monkeypatch):
     )
     assert resp.status_code == 200
     assert resp.json()["tier"] == "silver"
+
+
+from models import SocialConnection
+
+
+def test_social_connections_lists_only_this_users_active_connections(client, monkeypatch):
+    c, TestingSession = client
+    _configure(monkeypatch)
+    s = TestingSession()
+    owner = User(username="jane", email="jane@example.com", hashed_password="x",
+                role="client", tier="trial", jhome_sub="sub-sc")
+    other = User(username="bob", email="bob@example.com", hashed_password="x",
+                role="client", tier="trial")
+    s.add_all([owner, other])
+    s.commit()
+    s.add_all([
+        SocialConnection(user_id=owner.id, platform="facebook", account_name="Jane's Page",
+                         access_token="t", is_active=True),
+        SocialConnection(user_id=owner.id, platform="linkedin", account_name="Jane LI",
+                         access_token="t", is_active=False),
+        SocialConnection(user_id=other.id, platform="facebook", account_name="Bob's Page",
+                         access_token="t", is_active=True),
+    ])
+    s.commit()
+    s.close()
+
+    resp = c.post(
+        "/internal/mcp/social-connections",
+        json={"email": "jane@example.com", "jhome_sub": "sub-sc", "email_verified": True},
+        headers={"X-Internal-Key": "test-mcp-key"},
+    )
+    assert resp.status_code == 200
+    conns = resp.json()["connections"]
+    assert len(conns) == 1
+    assert conns[0]["platform"] == "facebook"
+    assert conns[0]["display_name"] == "Jane's Page"

@@ -212,6 +212,25 @@ def mcp_ensure_account(req: EnsureAccountRequest, response: Response,
     return {"user_id": user.id, "tier": user.tier}
 
 
+class SocialConnectionsRequest(_McpIdentityRequest):
+    pass
+
+
+@router.post("/internal/mcp/social-connections", dependencies=[Depends(require_mcp_internal_key)])
+def mcp_social_connections(req: SocialConnectionsRequest, response: Response,
+                           db: Session = Depends(get_db)) -> dict:
+    response.headers["Cache-Control"] = "no-store"
+    user = _resolve_mcp_identity(db, req)
+    conns = db.query(SocialConnection).filter(
+        SocialConnection.user_id == user.id,
+        SocialConnection.is_active == True,  # noqa: E712
+    ).all()
+    return {"connections": [
+        {"id": c.id, "platform": c.platform, "display_name": c.account_name}
+        for c in conns
+    ]}
+
+
 @router.post("/internal/handoff", dependencies=[Depends(require_internal_key)])
 def handoff(req: HandoffRequest, response: Response, db: Session = Depends(get_db)) -> dict:
     response.headers["Cache-Control"] = "no-store"
