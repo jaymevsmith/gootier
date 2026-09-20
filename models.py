@@ -398,6 +398,7 @@ KNOWN_ENV_KEYS = [
     ("GOOGLE_AUTH_CLIENT_SECRET", "auth",   True,  False, "Google OAuth client secret for Sign in with Google. Falls back to YOUTUBE_CLIENT_SECRET if blank."),
     ("GOOGLE_AUTH_REDIRECT",      "auth",   False, False, "Sign in with Google redirect URI, e.g. https://yourhost/oauth/google/callback. Must be registered in Google Cloud Console alongside the YouTube redirect."),
     ("GOOTIER_INTERNAL_KEY",      "auth",   True,  False, "Shared secret the Backoffice presents as X-Internal-Key on POST /internal/handoff. Empty = the endpoint fails closed (401 on every call)."),
+    ("GOOTIER_MCP_INTERNAL_KEY",  "auth",   True,  False, "Shared secret the Gootier-MCP-Server presents as X-Internal-Key on POST /internal/mcp/*. Empty = every MCP route fails closed (401 on every call)."),
 
     ("FAL_API_KEY",            "ai",      True,  False, "fal.ai API key powering image + video generation."),
 ]

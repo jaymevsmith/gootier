@@ -9,19 +9,24 @@ jhome-backoffice repo for the full requirement list this implements.
 import logging
 import re
 import secrets
+from datetime import datetime
+from typing import List
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from auth import hash_password
+from auth import _load_permissions, hash_password
 from database import get_db
-from models import HandoffToken, User, log_action
+from models import EmailBlast, HandoffToken, SocialConnection, SocialPost, User, log_action
 from routes.oauth_routes import _unique_username_from_email
+from services.ai_generator import generate_campaign
 from services.env_config import get_env
 from services.handoff import generate_token, hash_token, default_expiry
+from services.quotas import check_and_raise, check_per_call
+from services.social_publish import publish_to_connections
 from services import token_wallet
 
 log = logging.getLogger("gootier.internal_handoff")
@@ -48,6 +53,14 @@ def require_internal_key(x_internal_key: str = Header(default="")) -> None:
     # Fail CLOSED on an unset key. Compare as bytes, not str:
     # secrets.compare_digest raises TypeError on non-ASCII str operands, and
     # Starlette decodes headers as latin-1, so any byte >= 0x80 reaches here.
+    if not expected or not secrets.compare_digest(
+        x_internal_key.encode("utf-8"), expected.encode("utf-8")
+    ):
+        raise HTTPException(status_code=401, detail="invalid internal key")
+
+
+def require_mcp_internal_key(x_internal_key: str = Header(default="")) -> None:
+    expected = get_env("GOOTIER_MCP_INTERNAL_KEY", "")
     if not expected or not secrets.compare_digest(
         x_internal_key.encode("utf-8"), expected.encode("utf-8")
     ):
@@ -150,6 +163,53 @@ def resolve_or_create_gootier_user(
             log.exception("could not link wallet for user %s", user.id)
 
     return user
+
+
+class _McpIdentityRequest(BaseModel):
+    jhome_sub: str | None = None
+    email: str
+    email_verified: bool = False
+
+
+def _resolve_mcp_identity(db: Session, req: "_McpIdentityRequest") -> User:
+    email = req.email.strip().lower()
+    if not _EMAIL_RE.match(email):
+        raise HTTPException(status_code=422, detail={"error": "invalid_email"})
+    user = resolve_or_create_gootier_user(
+        db, jhome_sub=req.jhome_sub, email=email,
+        email_verified=req.email_verified, name=None,
+    )
+    # See Task 1's note: resolve_or_create_gootier_user does NOT commit a
+    # jhome_sub binding itself. By the time this call returns successfully,
+    # every identity-related refusal has already passed -- a route-level
+    # permission or quota refusal AFTER this point is orthogonal to identity
+    # and must not roll the binding back. So this is the right place to
+    # commit it, once, for all 5 routes.
+    db.commit()
+    _load_permissions(db, user)
+    return user
+
+
+def _raise_quota_error(exc: HTTPException, code: str) -> None:
+    """Re-raise a plain-string-detail HTTPException from services/quotas.py
+    as this router's own structured shape, preserving the original
+    human-readable string as `message` so customer-facing copy can still
+    reflect Gootier's real limits without the MCP tool layer string-matching
+    UI prose."""
+    raise HTTPException(status_code=exc.status_code,
+                        detail={"error": code, "message": exc.detail}) from exc
+
+
+class EnsureAccountRequest(_McpIdentityRequest):
+    pass
+
+
+@router.post("/internal/mcp/ensure-account", dependencies=[Depends(require_mcp_internal_key)])
+def mcp_ensure_account(req: EnsureAccountRequest, response: Response,
+                       db: Session = Depends(get_db)) -> dict:
+    response.headers["Cache-Control"] = "no-store"
+    user = _resolve_mcp_identity(db, req)
+    return {"user_id": user.id, "tier": user.tier}
 
 
 @router.post("/internal/handoff", dependencies=[Depends(require_internal_key)])
