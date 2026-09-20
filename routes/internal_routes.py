@@ -383,9 +383,17 @@ def mcp_draft_campaign(req: DraftCampaignRequest, response: Response,
     try:
         result = generate_campaign(plan=req.plan, schedule=req.schedule,
                                    count=req.count, channels=req.channels)
-    except Exception as e:
+    except Exception:
+        # Never relay the raw exception text: a bug inside generate_campaign
+        # (a malformed-response KeyError, an SDK error) would otherwise
+        # surface verbatim through a 502 an MCP client renders to the
+        # customer, and would read as generic upstream-AI flakiness instead
+        # of the programming bug it might actually be. The real exception
+        # goes to the log, where it belongs.
+        log.exception("draft-campaign failed for user %s", user.id)
         raise HTTPException(status_code=502,
-                            detail={"error": "ai_generation_failed", "message": str(e)})
+                            detail={"error": "ai_generation_failed",
+                                    "message": "AI generation failed, please try again."})
 
     log_action(db, user, "AI_GENERATE", "Campaign",
               detail=f"Generated {len((result or {}).get('items', []))} item(s) via MCP")
