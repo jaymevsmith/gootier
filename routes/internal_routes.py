@@ -9,19 +9,25 @@ jhome-backoffice repo for the full requirement list this implements.
 import logging
 import re
 import secrets
+from datetime import datetime
+from typing import List
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from auth import hash_password
+from auth import _load_permissions, hash_password
 from database import get_db
-from models import HandoffToken, User, log_action
+from models import EmailBlast, HandoffToken, SocialConnection, SocialPost, User, log_action
 from routes.oauth_routes import _unique_username_from_email
+from services.ai_generator import generate_campaign
 from services.env_config import get_env
+from services.email_utils import send_blast_email
 from services.handoff import generate_token, hash_token, default_expiry
+from services.quotas import check_and_raise, check_per_call
+from services.social_publish import publish_to_connections
 from services import token_wallet
 
 log = logging.getLogger("gootier.internal_handoff")
@@ -48,6 +54,14 @@ def require_internal_key(x_internal_key: str = Header(default="")) -> None:
     # Fail CLOSED on an unset key. Compare as bytes, not str:
     # secrets.compare_digest raises TypeError on non-ASCII str operands, and
     # Starlette decodes headers as latin-1, so any byte >= 0x80 reaches here.
+    if not expected or not secrets.compare_digest(
+        x_internal_key.encode("utf-8"), expected.encode("utf-8")
+    ):
+        raise HTTPException(status_code=401, detail="invalid internal key")
+
+
+def require_mcp_internal_key(x_internal_key: str = Header(default="")) -> None:
+    expected = get_env("GOOTIER_MCP_INTERNAL_KEY", "")
     if not expected or not secrets.compare_digest(
         x_internal_key.encode("utf-8"), expected.encode("utf-8")
     ):
@@ -85,6 +99,332 @@ def _create_user(db: Session, email: str, jhome_sub: str | None, name: str | Non
     raise HTTPException(status_code=500, detail="could not allocate a username")
 
 
+def resolve_or_create_gootier_user(
+    db: Session, *, jhome_sub: str | None, email: str, email_verified: bool,
+    name: str | None = None, link_wallet: bool = True,
+) -> User:
+    """Find-or-create a Gootier user by email -- every one of the 5
+    /internal/mcp/* routes calls this directly (not only ensure-account), so
+    the system works correctly even if a customer's AI client never calls
+    ensure-account first, matching MidCanvas's generate_image_for_mcp
+    precedent.
+
+    `email` must already be normalized (.strip().lower()) by the caller.
+
+    `link_wallet` defaults True to preserve handoff()'s existing behavior
+    unchanged. The MCP facade design spec is explicit that NONE of the 5
+    /internal/mcp/* routes should link the Jhome Token Service wallet --
+    nothing in that slice bills tokens, so wiring it in would be speculative
+    scope with nothing to exercise it (see
+    docs/superpowers/specs/2026-09-15-gootier-mcp-facade-design.md). Found
+    during the Part A whole-branch review: this shared helper inherited
+    handoff()'s unconditional wallet-link, which silently contradicted that
+    stated intent for every one of the 5 routes, not just ensure-account --
+    a class of bug a per-route diff review can't see. _resolve_mcp_identity
+    passes link_wallet=False explicitly.
+    """
+    matches = db.query(User).filter(func.lower(User.email) == email).order_by(User.id).all()
+    if len(matches) > 1:
+        log.warning("mcp identity refused: %d case-variant accounts for email %s", len(matches), email)
+        raise HTTPException(status_code=409, detail={"error": "ambiguous_identity"})
+    user = matches[0] if matches else None
+
+    if user is not None and not user.is_active:
+        log.warning("mcp identity refused: user %s is deactivated", user.id)
+        raise HTTPException(status_code=403, detail={"error": "account_inactive"})
+
+    if user is not None and not email_verified:
+        log.warning("mcp identity refused: caller did not assert email_verified for user %s", user.id)
+        raise HTTPException(status_code=409, detail={"error": "unverified_caller_email"})
+
+    if user is None and jhome_sub:
+        existing_sub_holder = db.query(User).filter(User.jhome_sub == jhome_sub).first()
+        if existing_sub_holder is not None:
+            log.warning(
+                "mcp identity refused: jhome_sub %s already belongs to a different user (%s), "
+                "but the request's email does not match that user",
+                jhome_sub, existing_sub_holder.id,
+            )
+            raise HTTPException(status_code=409, detail={"error": "linked_elsewhere"})
+
+    if user is None:
+        user = _create_user(db, email, jhome_sub, name)
+    elif jhome_sub and not user.jhome_sub:
+        # NOTE: deliberately not committed here. A caller-side refusal that
+        # fires later in this function (e.g. the admin check below) must
+        # leave zero DB side effects -- see
+        # test_admin_jhome_sub_adoption_does_not_persist_on_refusal in
+        # tests/test_internal_handoff.py. The caller (handoff() or an
+        # /internal/mcp/* route) is responsible for committing once identity
+        # resolution has fully succeeded.
+        user.jhome_sub = jhome_sub
+    elif jhome_sub and user.jhome_sub and user.jhome_sub != jhome_sub:
+        log.warning(
+            "mcp identity refused: user %s carried jhome_sub %s but it already has %s",
+            user.id, jhome_sub, user.jhome_sub,
+        )
+        raise HTTPException(status_code=409, detail={"error": "linked_elsewhere"})
+
+    if user.has_role("admin"):
+        log.warning("mcp identity refused: user %s has platform admin access", user.id)
+        raise HTTPException(status_code=403, detail={"error": "admin_account_not_supported"})
+
+    if user.jhome_sub and link_wallet:
+        try:
+            token_wallet.link_wallet_to_customer(db, user)
+        except Exception:  # noqa: BLE001 -- must never fail an identity resolution on this
+            log.exception("could not link wallet for user %s", user.id)
+
+    return user
+
+
+class _McpIdentityRequest(BaseModel):
+    jhome_sub: str | None = None
+    email: str
+    email_verified: bool = False
+
+
+def _resolve_mcp_identity(db: Session, req: "_McpIdentityRequest") -> User:
+    email = req.email.strip().lower()
+    if not _EMAIL_RE.match(email):
+        raise HTTPException(status_code=422, detail={"error": "invalid_email"})
+    user = resolve_or_create_gootier_user(
+        db, jhome_sub=req.jhome_sub, email=email,
+        email_verified=req.email_verified, name=None, link_wallet=False,
+    )
+    # See Task 1's note: resolve_or_create_gootier_user does NOT commit a
+    # jhome_sub binding itself. By the time this call returns successfully,
+    # every identity-related refusal has already passed -- a route-level
+    # permission or quota refusal AFTER this point is orthogonal to identity
+    # and must not roll the binding back. So this is the right place to
+    # commit it, once, for all 5 routes.
+    db.commit()
+    _load_permissions(db, user)
+    return user
+
+
+def _raise_quota_error(exc: HTTPException, code: str) -> None:
+    """Re-raise a plain-string-detail HTTPException from services/quotas.py
+    as this router's own structured shape, preserving the original
+    human-readable string as `message` so customer-facing copy can still
+    reflect Gootier's real limits without the MCP tool layer string-matching
+    UI prose."""
+    raise HTTPException(status_code=exc.status_code,
+                        detail={"error": code, "message": exc.detail}) from exc
+
+
+class EnsureAccountRequest(_McpIdentityRequest):
+    pass
+
+
+@router.post("/internal/mcp/ensure-account", dependencies=[Depends(require_mcp_internal_key)])
+def mcp_ensure_account(req: EnsureAccountRequest, response: Response,
+                       db: Session = Depends(get_db)) -> dict:
+    response.headers["Cache-Control"] = "no-store"
+    user = _resolve_mcp_identity(db, req)
+    return {"user_id": user.id, "tier": user.tier}
+
+
+class SocialConnectionsRequest(_McpIdentityRequest):
+    pass
+
+
+@router.post("/internal/mcp/social-connections", dependencies=[Depends(require_mcp_internal_key)])
+def mcp_social_connections(req: SocialConnectionsRequest, response: Response,
+                           db: Session = Depends(get_db)) -> dict:
+    response.headers["Cache-Control"] = "no-store"
+    user = _resolve_mcp_identity(db, req)
+    conns = db.query(SocialConnection).filter(
+        SocialConnection.user_id == user.id,
+        SocialConnection.is_active == True,  # noqa: E712
+    ).all()
+    return {"connections": [
+        {"id": c.id, "platform": c.platform, "display_name": c.account_name}
+        for c in conns
+    ]}
+
+
+class SchedulePostRequest(_McpIdentityRequest):
+    content: str = Field(..., min_length=1, max_length=5000)
+    connection_ids: List[int]
+    image_url: str | None = None
+    video_url: str | None = None
+    link_url: str | None = None
+    scheduled_at: datetime | None = None
+
+
+@router.post("/internal/mcp/schedule-post", dependencies=[Depends(require_mcp_internal_key)])
+async def mcp_schedule_post(req: SchedulePostRequest, response: Response,
+                            db: Session = Depends(get_db)) -> dict:
+    response.headers["Cache-Control"] = "no-store"
+    user = _resolve_mcp_identity(db, req)
+
+    if not req.connection_ids:
+        # Without this, an empty list passes ownership vacuously (0 == 0)
+        # and, when unscheduled, publish_to_connections([]) returns {} --
+        # successes (0) == len(owned) (0) reads as "published" with zero
+        # connections actually posted to. A false success is worse than a
+        # refusal here.
+        raise HTTPException(status_code=400,
+                            detail={"error": "invalid_connections",
+                                    "message": "connection_ids must not be empty"})
+
+    owned = db.query(SocialConnection).filter(
+        SocialConnection.id.in_(req.connection_ids),
+        SocialConnection.user_id == user.id,
+        SocialConnection.is_active == True,  # noqa: E712
+    ).all()
+    if len(owned) != len(req.connection_ids):
+        raise HTTPException(status_code=400,
+                            detail={"error": "invalid_connections",
+                                    "message": "One or more connections invalid"})
+
+    if not user.perm("marketing.social_post"):
+        raise HTTPException(status_code=403,
+                            detail={"error": "plan_upgrade_required",
+                                    "message": "Requires permission: marketing.social_post"})
+    try:
+        check_and_raise(db, user, "posts_per_month")
+    except HTTPException as exc:
+        _raise_quota_error(exc, "posts_quota_exceeded")
+
+    post = SocialPost(
+        user_id=user.id,
+        content=req.content,
+        image_url=req.image_url,
+        video_url=req.video_url,
+        link_url=req.link_url,
+        connection_ids=",".join(str(c.id) for c in owned),
+        scheduled_at=req.scheduled_at,
+        status="pending",
+    )
+    db.add(post)
+    db.commit()
+    db.refresh(post)
+
+    if not req.scheduled_at:
+        results = await publish_to_connections(
+            owned, post.content, link_url=post.link_url,
+            image_url=post.image_url, video_url=post.video_url,
+        )
+        successes = sum(1 for r in results.values() if r.get("success"))
+        post.status = ("published" if successes == len(owned)
+                       else "partial" if successes else "failed")
+        post.published_at = datetime.utcnow()
+        import json as _json
+        post.publish_results = _json.dumps({str(k): v for k, v in results.items()})
+        db.commit()
+
+    log_action(db, user, "CREATE", "SocialPost", str(post.id), detail="via MCP")
+    return {"id": post.id, "status": post.status}
+
+
+class ScheduleEmailBlastRequest(_McpIdentityRequest):
+    subject: str = Field(..., min_length=1, max_length=200)
+    body_html: str = Field(..., min_length=1)
+    recipients: List[str]
+    scheduled_at: datetime | None = None
+
+
+@router.post("/internal/mcp/schedule-email-blast", dependencies=[Depends(require_mcp_internal_key)])
+def mcp_schedule_email_blast(req: ScheduleEmailBlastRequest, response: Response,
+                             db: Session = Depends(get_db)) -> dict:
+    response.headers["Cache-Control"] = "no-store"
+    user = _resolve_mcp_identity(db, req)
+
+    if not req.recipients:
+        # Same reasoning as schedule-post's empty-connection_ids guard: an
+        # empty list still passes both quota checks (0 never exceeds a cap)
+        # and would create a junk EmailBlast row while consuming a
+        # blasts_per_month unit for zero actual communication. Found during
+        # the Part A whole-branch review re-examining the per-task
+        # conclusion that the status ternary "fails safe" -- it does avoid a
+        # false SUCCESS, but not wasted quota or a junk row, which is the
+        # same class of harm the connection_ids guard exists to prevent.
+        raise HTTPException(status_code=400,
+                            detail={"error": "invalid_recipients",
+                                    "message": "recipients must not be empty"})
+
+    if not user.perm("marketing.email_blast"):
+        raise HTTPException(status_code=403,
+                            detail={"error": "plan_upgrade_required",
+                                    "message": "Requires permission: marketing.email_blast"})
+    try:
+        check_and_raise(db, user, "blasts_per_month")
+    except HTTPException as exc:
+        _raise_quota_error(exc, "blasts_quota_exceeded")
+    try:
+        check_per_call(db, user, "blast_recipients", len(req.recipients))
+    except HTTPException as exc:
+        _raise_quota_error(exc, "recipient_cap_exceeded")
+
+    blast = EmailBlast(
+        user_id=user.id,
+        subject=req.subject,
+        body_html=req.body_html,
+        recipient_list="\n".join(req.recipients),
+        recipient_count=len(req.recipients),
+        scheduled_at=req.scheduled_at,
+        status="pending",
+    )
+    db.add(blast)
+    db.commit()
+    db.refresh(blast)
+
+    if not req.scheduled_at:
+        sent, failed = send_blast_email(blast.subject, blast.body_html, req.recipients)
+        blast.sent_count = sent
+        blast.failed_count = failed
+        blast.status = ("sent" if failed == 0 and sent > 0
+                        else "partial" if sent > 0 else "failed")
+        db.commit()
+
+    log_action(db, user, "CREATE", "EmailBlast", str(blast.id), detail="via MCP")
+    return {"id": blast.id, "status": blast.status}
+
+
+class DraftCampaignRequest(_McpIdentityRequest):
+    plan: str = Field(..., min_length=10)
+    schedule: str = ""
+    count: int = Field(5, ge=1, le=20)
+    channels: List[str] = ["social_post", "email_blast"]
+
+
+@router.post("/internal/mcp/draft-campaign", dependencies=[Depends(require_mcp_internal_key)])
+def mcp_draft_campaign(req: DraftCampaignRequest, response: Response,
+                       db: Session = Depends(get_db)) -> dict:
+    response.headers["Cache-Control"] = "no-store"
+    user = _resolve_mcp_identity(db, req)
+
+    if not user.perm("marketing.ai_generate"):
+        raise HTTPException(status_code=403,
+                            detail={"error": "plan_upgrade_required",
+                                    "message": "Requires permission: marketing.ai_generate"})
+    try:
+        check_and_raise(db, user, "ai_generations_per_month")
+    except HTTPException as exc:
+        _raise_quota_error(exc, "ai_generations_quota_exceeded")
+
+    try:
+        result = generate_campaign(plan=req.plan, schedule=req.schedule,
+                                   count=req.count, channels=req.channels)
+    except Exception:
+        # Never relay the raw exception text: a bug inside generate_campaign
+        # (a malformed-response KeyError, an SDK error) would otherwise
+        # surface verbatim through a 502 an MCP client renders to the
+        # customer, and would read as generic upstream-AI flakiness instead
+        # of the programming bug it might actually be. The real exception
+        # goes to the log, where it belongs.
+        log.exception("draft-campaign failed for user %s", user.id)
+        raise HTTPException(status_code=502,
+                            detail={"error": "ai_generation_failed",
+                                    "message": "AI generation failed, please try again."})
+
+    log_action(db, user, "AI_GENERATE", "Campaign",
+              detail=f"Generated {len((result or {}).get('items', []))} item(s) via MCP")
+    return result
+
+
 @router.post("/internal/handoff", dependencies=[Depends(require_internal_key)])
 def handoff(req: HandoffRequest, response: Response, db: Session = Depends(get_db)) -> dict:
     response.headers["Cache-Control"] = "no-store"
@@ -97,79 +437,10 @@ def handoff(req: HandoffRequest, response: Response, db: Session = Depends(get_d
     if not _EMAIL_RE.match(email):
         raise HTTPException(status_code=422, detail="invalid email")
 
-    matches = db.query(User).filter(func.lower(User.email) == email).order_by(User.id).all()
-    if len(matches) > 1:
-        log.warning("handoff refused: %d case-variant accounts for email %s", len(matches), email)
-        # Jhome Auth's own code for "more than one account answers to this
-        # identity, so binding either would be a guess". The Backoffice has no
-        # _REFUSAL_COPY entry for it yet (it is listed in _TERMINAL_REFUSALS),
-        # so it renders the generic action-needed page -- correct behaviour,
-        # just uncopied.
-        raise HTTPException(status_code=409, detail={"error": "ambiguous_identity"})
-    user = matches[0] if matches else None
-
-    if user is not None and not user.is_active:
-        log.warning("handoff refused: user %s is deactivated", user.id)
-        # 403, NOT 401. 401 is the auth layer's code for "your shared key is
-        # wrong", and the Backoffice logs an ERROR-level "handoff
-        # misconfigured (401)" on it -- a suspended customer clicking the tile
-        # would raise a false credential-rotation alarm every time. Jhome Auth
-        # uses 403 + account_inactive for this exact condition.
-        raise HTTPException(status_code=403, detail={"error": "account_inactive"})
-
-    if user is not None and not req.email_verified:
-        # Matching by email is a WEAK signal: it binds jhome_sub onto an
-        # account this caller has only named, not proven. Refuse unless the
-        # Backoffice explicitly vouched for the address. Same code and status
-        # as Jhome Auth's equivalent gate; it has _REFUSAL_COPY there, which
-        # points the customer at /account to confirm their address.
-        log.warning("handoff refused: caller did not assert email_verified for user %s", user.id)
-        raise HTTPException(status_code=409, detail={"error": "unverified_caller_email"})
-
-    if user is None and req.jhome_sub:
-        existing_sub_holder = db.query(User).filter(User.jhome_sub == req.jhome_sub).first()
-        if existing_sub_holder is not None:
-            log.warning(
-                "handoff refused: jhome_sub %s already belongs to a different user (%s), "
-                "but the request's email does not match that user",
-                req.jhome_sub, existing_sub_holder.id,
-            )
-            # Jhome Auth's linked_elsewhere: this identity is already bound to
-            # a different account here. (Its copy is written for the mirror
-            # case -- the account owns a different sub -- but the customer-
-            # facing next step is the same one, and it is the closest real
-            # code in the fleet.)
-            raise HTTPException(status_code=409, detail={"error": "linked_elsewhere"})
-
-    if user is None:
-        # NOTE: a concurrent-same-email-insert race (two handoffs for the
-        # exact same brand-new email at once) is not self-healed here --
-        # genuinely rarer than the jhome_sub-mismatch case above, and not
-        # worth more retry machinery for the marginal benefit.
-        user = _create_user(db, email, req.jhome_sub, req.name)
-    elif req.jhome_sub and not user.jhome_sub:
-        user.jhome_sub = req.jhome_sub
-    elif req.jhome_sub and user.jhome_sub and user.jhome_sub != req.jhome_sub:
-        log.warning(
-            "handoff refused: user %s carried jhome_sub %s but it already has %s",
-            user.id, req.jhome_sub, user.jhome_sub,
-        )
-        raise HTTPException(status_code=409, detail={"error": "linked_elsewhere"})
-
-    if user.has_role("admin"):
-        log.warning("handoff refused: user %s has platform admin access", user.id)
-        # Gootier-specific: no other connected app refuses on platform-admin
-        # role, so there is no fleet code to reuse. The Backoffice's
-        # _REFUSAL_COPY has no entry for this yet, so it renders the generic
-        # "could not sign you in" action-needed page until one is added there
-        # (a Backoffice-side follow-up, out of scope here).
-        raise HTTPException(status_code=403, detail={"error": "admin_account_not_supported"})
-
-    if user.jhome_sub:
-        try:
-            token_wallet.link_wallet_to_customer(db, user)
-        except Exception:  # noqa: BLE001 -- a login path must never fail on this
-            log.exception("could not link wallet for user %s", user.id)
+    user = resolve_or_create_gootier_user(
+        db, jhome_sub=req.jhome_sub, email=email,
+        email_verified=req.email_verified, name=req.name,
+    )
 
     token = generate_token()
     db.add(HandoffToken(token_hash=hash_token(token), user_id=user.id,
