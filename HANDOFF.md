@@ -1179,3 +1179,43 @@ the trading project still wants it.
   `services/csrf.py`, `services/secrets.py`'s `TypeDecorator` and
   `routes/oauth_routes.py` all exist. Not corrected here: that is a separate
   claim needing its own verification, not a deploy-target fix.
+
+## gootier.biztek.io cutover -- DONE, 3 live social OAuth integrations left untouched (2026-10-10)
+
+Part of the fleet-wide Jhome Automation -> Biztek.io rebrand. DNS and the Railway custom
+domain for `gootier.biztek.io` already existed on the `gootier` service (not this session's
+doing) and already served the app correctly.
+
+**Resolves an earlier "anomaly" flag**: a prior pass noted `gootier.jhomeautomation.com` and
+`gootier.biztek.io` resolved to different-looking Railway edge hostnames via `dig` and treated
+that as suspicious. It isn't -- both ARE registered on the same `gootier` service
+(`railway domain` confirms it); Railway's edge just assigns different per-domain anycast
+hostnames for the same backend. No misconfiguration.
+
+**`APP_URL` (env, was `https://gootier.jhomeautomation.com`) only feeds ICS calendar feed URL
+generation** (`routes/web_routes.py`) -- NOT any of this app's OAuth integrations. Checked
+carefully first: Gootier has FIVE separate OAuth providers (Meta/Facebook, LinkedIn, YouTube,
+TikTok, Google), each with its OWN independent redirect env var
+(`META_OAUTH_REDIRECT`/`LINKEDIN_OAUTH_REDIRECT`/`YOUTUBE_OAUTH_REDIRECT`/
+`TIKTOK_OAUTH_REDIRECT`/`GOOGLE_AUTH_REDIRECT`), none derived from `APP_URL`. Three of those
+(Meta, LinkedIn, TikTok) are LIVE, set to `gootier.jhomeautomation.com/oauth/.../callback`,
+and registered with those platforms' own developer consoles -- deliberately left untouched.
+YouTube and Google Auth redirects are unset (those integrations are not yet configured), so
+nothing there to break either way.
+
+Changed on the `gootier` service (Railway, production):
+```
+APP_URL=https://gootier.biztek.io   (was the jhomeautomation.com domain)
+```
+This service appears to auto-redeploy on a variable change (a build kicked off immediately
+after `railway variables --set`, unlike every other Railway service touched in this fleet
+rebrand so far, which all needed an explicit `railway redeploy`) -- waited for it to return
+to Online rather than issuing a redundant redeploy.
+
+Verified post-deploy: both `gootier.biztek.io` and `gootier.jhomeautomation.com` return the
+app's normal 303-to-login.
+
+**If Meta/LinkedIn/TikTok OAuth ever needs to move to biztek.io too**, that requires the same
+coordination pattern as RingBack/MidCanvas's Google OAuth cutovers -- add the new callback URL
+in each platform's own developer console FIRST, then flip that platform's specific
+`*_OAUTH_REDIRECT` var. Not attempted here; `APP_URL` alone was enough for this pass.
