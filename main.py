@@ -31,6 +31,25 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Gootier", lifespan=lifespan)
 
+
+@app.middleware("http")
+async def redirect_old_domain(request, call_next):
+    """GET/HEAD-only, and /oauth/ is exempt outright: Meta, LinkedIn, and
+    TikTok's registered OAuth redirect_uris still point at gootier's old
+    jhomeautomation.com host (per HANDOFF.md, deliberately not moved yet),
+    so their callback GETs must land here unredirected or login breaks for
+    all three. Google's APP_URL-derived callback already uses the new host."""
+    host = request.headers.get("host", "").split(":")[0]
+    if (host == "gootier.jhomeautomation.com"
+            and request.method in ("GET", "HEAD")
+            and not request.url.path.startswith("/oauth/")):
+        from fastapi.responses import RedirectResponse
+        target = f"https://gootier.biztek.io{request.url.path}"
+        if request.url.query:
+            target += f"?{request.url.query}"
+        return RedirectResponse(target, status_code=301)
+    return await call_next(request)
+
 origins = [o.strip() for o in os.getenv("ALLOWED_ORIGINS", "").split(",") if o.strip()]
 if origins:
     app.add_middleware(
