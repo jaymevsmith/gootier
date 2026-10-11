@@ -1219,3 +1219,13 @@ app's normal 303-to-login.
 coordination pattern as RingBack/MidCanvas's Google OAuth cutovers -- add the new callback URL
 in each platform's own developer console FIRST, then flip that platform's specific
 `*_OAUTH_REDIRECT` var. Not attempted here; `APP_URL` alone was enough for this pass.
+
+## Old-domain redirect to biztek.io (2026-10-11)
+
+`main.py`: GET/HEAD requests on `gootier.jhomeautomation.com` now 301 to
+`gootier.biztek.io`. `/oauth/` is exempt outright: Meta, LinkedIn, and TikTok's
+registered OAuth redirect_uris still point at the old host (deliberately not moved,
+per the existing entries above, pending their own console updates), and those
+callbacks arrive as GET -- redirecting them would break login for all three
+platforms. Verified by running the app locally (uvicorn + sqlite) before deploying.
+This project is git-linked -- the push itself triggered the deploy. Verified live.
