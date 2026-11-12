@@ -1229,3 +1229,13 @@ per the existing entries above, pending their own console updates), and those
 callbacks arrive as GET -- redirecting them would break login for all three
 platforms. Verified by running the app locally (uvicorn + sqlite) before deploying.
 This project is git-linked -- the push itself triggered the deploy. Verified live.
+
+## Biztek.io wording cleanup, batch 3 (2026-11-11)
+Branch `copy/biztek-wording-2026-11-c`. Copy only, no plumbing touched.
+- `templates/terms.html`, `templates/privacy.html`: operator is now "Biztek.io" (was Jhome Automation); site links use `gootier.biztek.io` (live host answers 200; `gootier.jhomeautomation.com` answers 301); support/privacy mailtos -> `support@biztek.io`.
+- `templates/billing.html`: "Jhome Tokens" -> "Tokens" (naming rule).
+- New guard `tests/test_copy_no_old_company.py`.
+- Tests: 198 passed before; after 199 passed (198 + guard).
+- **Legal must confirm** the contracting entity name. "Biztek.io" is a placeholder for the operator wording, not a confirmed legal entity.
+- Left alone: `APP_URL` default in `routes/web_routes.py` and the hostname redirect in `main.py` (functional), `jhome-tokens` element id and `onJhomeTokenBuy` (plumbing), `jhome_affiliates.py`, tests, docs, earlier HANDOFF history.
+- **Owner action (Google Cloud console, not code):** OAuth consent screen still shows App name `jhomeautomation.com` and a gmail support email; change to the product name and support@biztek.io.
